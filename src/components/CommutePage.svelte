@@ -6,7 +6,7 @@
   import RowActionIcons from './RowActionIcons.svelte'
   import { calcCommute } from '../lib/calculations.js'
   import { commuteList, upsertCommute, deleteCommuteById, selectedCompany } from '../lib/ghg.js'
-  import { confirmDanger, confirmAction, toastOk, toastErr } from '../lib/notify.js'
+  import { confirmDanger, confirmAction, toastOk, toastErr, showErrorDetail } from '../lib/notify.js'
 
   let cName = $state('')
   let cEmpid = $state('')
@@ -21,6 +21,7 @@
   let cDeptFilter = $state('')
   /** @type {string | null} */
   let editingCommuteId = $state(null)
+  let saving = $state(false)
   let commuteFormCard = $state(/** @type {HTMLDivElement | undefined} */ (undefined))
 
   /** @param {{ vehicle?: string, ef?: number }} c */
@@ -132,32 +133,37 @@
     const vehicleLabel =
       COMMUTE_VEHICLES.find((v) => v.value === ef || v.value == cVehicle)?.label.split(' (')[0] ?? ''
 
-    const existing = isEdit ? null : $commuteList.find((c) => c.empId === empId)
-    const effectiveDays = Math.max(0, days - wfh)
-    upsertCommute({
-      id: editingCommuteId ?? existing?.id ?? Date.now().toString(),
-      name,
-      empId,
-      dept: cDept,
-      company: cCompany,
-      vehicle: vehicleLabel,
-      ef,
-      km,
-      days,
-      months,
-      wfh,
-      carpool,
-      effectiveDays,
-      co2,
-      savedAt: new Date().toISOString(),
-    })
-    toastOk(
-      isEdit || existing
-        ? `Updated commute info for ${name}`
-        : `Saved commute info for ${name} — ${co2} kg CO₂e`,
-    )
-    editingCommuteId = null
-    await resetForm(false)
+    saving = true
+    try {
+      const { updated } = await upsertCommute(
+        {
+          name,
+          empId,
+          dept: cDept,
+          company: cCompany,
+          vehicle: vehicleLabel,
+          ef,
+          km,
+          days,
+          months,
+          wfh,
+          carpool,
+          co2,
+        },
+        editingCommuteId,
+      )
+      toastOk(
+        updated
+          ? `Updated commute info for ${name}`
+          : `Saved commute info for ${name} — ${co2} kg CO₂e`,
+      )
+      editingCommuteId = null
+      await resetForm(false)
+    } catch (e) {
+      await showErrorDetail(e, 'Saving to Lark Base failed')
+    } finally {
+      saving = false
+    }
   }
 
   /** @param {boolean} [ask] */
@@ -183,9 +189,13 @@
   async function deleteRow(id) {
     const ok = await confirmDanger('Remove employee from commute table?', '', 'Delete')
     if (!ok) return
-    deleteCommuteById(id)
-    if (editingCommuteId === id) editingCommuteId = null
-    toastOk('Deleted')
+    try {
+      await deleteCommuteById(id)
+      if (editingCommuteId === id) editingCommuteId = null
+      toastOk('Deleted')
+    } catch (e) {
+      await showErrorDetail(e, 'Deleting from Lark Base failed')
+    }
   }
 </script>
 
@@ -271,8 +281,8 @@
     </div>
 
     <div class="actions-bar">
-      <button type="button" class="btn btn-primary" onclick={saveCommute}>
-        {editingCommuteId ? 'Update' : 'Save commute information'}
+      <button type="button" class="btn btn-primary" disabled={saving} onclick={saveCommute}>
+        {saving ? 'Saving…' : editingCommuteId ? 'Update' : 'Save commute information'}
       </button>
       {#if editingCommuteId}
         <button type="button" class="btn" onclick={cancelEditCommute}>Cancel edit</button>

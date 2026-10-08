@@ -1,22 +1,7 @@
+import { get } from 'svelte/store'
 import * as DB from './db.js'
 import { matchesCompany } from './companies.js'
-import { periodKey, periodLabel } from './ghg.js'
-
-function getPeriodKeys() {
-  const all = new Set()
-  for (const k of DB.keys()) {
-    const m = k.match(/^ghg-(?:equip|emptrips|commute)-(\d{4}-\d{2})$/)
-    if (m) all.add(m[1])
-  }
-  const now = new Date()
-  all.add(periodKey(now.getMonth() + 1, now.getFullYear()))
-  return [...all].sort()
-}
-
-/** @param {{ confirmed?: boolean }} r */
-function isEquipInReport(r) {
-  return r.confirmed !== false
-}
+import { periodKey, periodLabel, allEquip, allTrips, allCommute } from './ghg.js'
 
 const SNAPSHOTS_KEY = 'ghg-period-snapshots'
 
@@ -38,22 +23,21 @@ export function hasSnapshot(pk, type) {
   return loadSnapshots().some((s) => s.periodKey === pk && s.type === type)
 }
 
-/** @param {string} pk */
-function readPeriodRaw(pk) {
+/** @param {(pk: string) => boolean} match */
+function readRows(match) {
   return {
-    equip: DB.load(`ghg-equip-${pk}`) || [],
-    emptrips: DB.load(`ghg-emptrips-${pk}`) || [],
-    commute: DB.load(`ghg-commute-${pk}`) || [],
+    equip: get(allEquip).filter((r) => match(r.pk)),
+    emptrips: get(allTrips).filter((r) => match(r.pk)),
+    commute: get(allCommute).filter((r) => match(r.pk)),
   }
 }
 
 /** @param {unknown[]} equip @param {unknown[]} trips @param {unknown[]} commute */
 function totalsFromRows(equip, trips, commute) {
-  const rep = equip.filter(isEquipInReport)
-  const s1 = rep
+  const s1 = equip
     .filter((/** @type {{ scope?: number }} */ r) => r.scope === 1)
     .reduce((s, /** @type {{ volume?: number, ef?: number }} */ r) => s + (r.volume && r.ef ? (r.volume * r.ef) / 1000 : 0), 0)
-  const s2 = rep
+  const s2 = equip
     .filter((/** @type {{ scope?: number }} */ r) => r.scope === 2)
     .reduce((s, /** @type {{ volume?: number, ef?: number }} */ r) => s + (r.volume && r.ef ? (r.volume * r.ef) / 1000 : 0), 0)
   const s3Trip = trips.reduce(
@@ -73,24 +57,9 @@ function totalsFromRows(equip, trips, commute) {
 export function createSnapshot(type, pkOrYear, label) {
   if (hasSnapshot(pkOrYear, type)) return null
 
-  let equip = []
-  let emptrips = []
-  let commute = []
-
-  if (type === 'month') {
-    const raw = readPeriodRaw(pkOrYear)
-    equip = raw.equip
-    emptrips = raw.emptrips
-    commute = raw.commute
-  } else {
-    const prefix = `${pkOrYear}-`
-    for (const pk of getPeriodKeys().filter((k) => k.startsWith(prefix))) {
-      const raw = readPeriodRaw(pk)
-      equip = equip.concat(raw.equip)
-      emptrips = emptrips.concat(raw.emptrips)
-      commute = commute.concat(raw.commute)
-    }
-  }
+  const { equip, emptrips, commute } = readRows(
+    type === 'month' ? (pk) => pk === pkOrYear : (pk) => pk.startsWith(`${pkOrYear}-`),
+  )
 
   const snap = {
     id: `${type}-${pkOrYear}-${Date.now()}`,

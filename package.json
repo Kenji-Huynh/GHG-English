@@ -16,7 +16,6 @@
     "vite": "^8.0.12"
   },
   "dependencies": {
-    "exceljs": "^4.4.0",
     "sweetalert2": "^11.26.24"
   }
 }

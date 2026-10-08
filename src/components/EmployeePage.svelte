@@ -18,7 +18,7 @@
     migrateTripHotels,
   } from '../lib/calculations.js'
   import { empTrips, addEmpTrip, updateEmpTripById, deleteEmpTripById, selectedCompany } from '../lib/ghg.js'
-  import { confirmDanger, confirmAction, toastOk, toastErr } from '../lib/notify.js'
+  import { confirmDanger, confirmAction, toastOk, toastErr, showErrorDetail } from '../lib/notify.js'
 
   function newLeg() {
     return {
@@ -51,6 +51,7 @@
   let empDeptFilter = $state('')
   /** @type {string | null} */
   let editingTripId = $state(null)
+  let saving = $state(false)
   let tripFormCard = $state(/** @type {HTMLDivElement | undefined} */ (undefined))
 
   $effect(() => {
@@ -195,7 +196,6 @@
     )
 
     const payload = {
-      id: editingTripId ?? Date.now().toString(),
       name,
       empId,
       dept,
@@ -218,26 +218,32 @@
       co2Ground: live.groundCO2,
       co2Hotel: live.hotelCO2,
       co2Total: live.total,
-      savedAt: new Date().toISOString(),
     }
 
-    if (isEdit) {
-      const updated = updateEmpTripById(editingTripId, payload)
-      if (!updated) {
-        toastErr('Trip conflicts with existing data — change employee ID / trip name / date / route.')
-        return
+    saving = true
+    try {
+      if (isEdit) {
+        const updated = await updateEmpTripById(editingTripId, payload)
+        if (!updated) {
+          toastErr('Trip conflicts with existing data — change employee ID / trip name / date / route.')
+          return
+        }
+        toastOk(`Updated "${trip}" — ${live.total} kg CO₂e`)
+      } else {
+        const added = await addEmpTrip(payload)
+        if (!added) {
+          toastErr('Trip already exists, not added.')
+          return
+        }
+        toastOk(`Saved "${trip}" — ${live.total} kg CO₂e`)
       }
-      toastOk(`Updated "${trip}" — ${live.total} kg CO₂e`)
-    } else {
-      const added = addEmpTrip(payload)
-      if (!added) {
-        toastErr('Trip already exists, not added.')
-        return
-      }
-      toastOk(`Saved "${trip}" — ${live.total} kg CO₂e`)
+      editingTripId = null
+      await resetForm(false)
+    } catch (e) {
+      await showErrorDetail(e, 'Saving to Lark Base failed')
+    } finally {
+      saving = false
     }
-    editingTripId = null
-    await resetForm(false)
   }
 
   /** @param {boolean} [ask] */
@@ -268,9 +274,13 @@
   async function deleteTrip(id) {
     const ok = await confirmDanger('Delete business trip?', 'Data will be removed from the current reporting period.', 'Delete')
     if (!ok) return
-    deleteEmpTripById(id)
-    if (editingTripId === id) editingTripId = null
-    toastOk('Business trip deleted')
+    try {
+      await deleteEmpTripById(id)
+      if (editingTripId === id) editingTripId = null
+      toastOk('Business trip deleted')
+    } catch (e) {
+      await showErrorDetail(e, 'Deleting from Lark Base failed')
+    }
   }
 </script>
 
@@ -525,8 +535,8 @@
     </div>
 
     <div class="actions-bar">
-      <button type="button" class="btn btn-primary" onclick={saveTrip}>
-        {editingTripId ? 'Update trip' : 'Save business trip'}
+      <button type="button" class="btn btn-primary" disabled={saving} onclick={saveTrip}>
+        {saving ? 'Saving…' : editingTripId ? 'Update trip' : 'Save business trip'}
       </button>
       {#if editingTripId}
         <button type="button" class="btn" onclick={cancelEdit}>Cancel edit</button>
@@ -573,10 +583,10 @@
             <th>Trip</th>
             <th>Route</th>
             <th>Date</th>
-            <th>Flight</th>
-            <th>Ground</th>
-            <th>Hotel</th>
-            <th>Total (kg)</th>
+            <th class="num">Flight (kg)</th>
+            <th class="num">Ground (kg)</th>
+            <th class="num">Hotel (kg)</th>
+            <th class="num">Total (kg)</th>
             <th></th>
           </tr>
         </thead>
@@ -630,14 +640,25 @@
                 </td>
                 <td style="font-size:11px">{t.from || '—'} → {t.to || '—'}</td>
                 <td style="font-size:11px">{t.dateFrom || '—'}</td>
-                <td style="font-size:11px;font-family:var(--mono)">{legSummary}{#if ptSummary}<br /><span style="color:var(--text3)">{ptSummary}</span>{/if}</td>
-                <td class="num">{t.co2Air || 0}</td>
-                <td class="num">{t.co2Ground || 0}</td>
+                <td class="num" style="font-size:11px">
+                  {t.co2Air || 0}
+                  {#if legSummary !== '—'}
+                    <br /><span style="color:var(--text3);font-weight:400;font-family:var(--mono)">{legSummary}</span>
+                  {/if}
+                </td>
+                <td class="num" style="font-size:11px">
+                  {t.co2Ground || 0}
+                  {#if ptSummary}
+                    <br /><span style="color:var(--text3);font-weight:400">{ptSummary}</span>
+                  {/if}
+                </td>
                 <td class="num" style="font-size:11px">
                   {t.co2Hotel || 0}
-                  {#if hotelSummary !== '—'}<br /><span style="color:var(--text3);font-weight:400">{hotelSummary}</span>{/if}
+                  {#if hotelSummary !== '—'}
+                    <br /><span style="color:var(--text3);font-weight:400">{hotelSummary}</span>
+                  {/if}
                 </td>
-                <td>
+                <td class="num">
                   <span
                     class="badge {t.co2Total > 500 ? 'badge-r' : t.co2Total > 100 ? 'badge-a' : 'badge-g'}"
                     >{t.co2Total} kg</span

@@ -41,8 +41,12 @@ export class LarkApiError extends Error {
 /** @param {string} path @param {string} [method] */
 export function inferLarkStep(path, method = 'GET') {
   if (path.includes('tenant_access_token')) return 'Get token (App ID / Secret)'
-  if (path.includes('batch_create')) return `Write table (${method})`
-  if (path.includes('/records')) return 'Read existing table (dedup check)'
+  if (path.includes('/records')) {
+    if (method === 'POST') return 'Create record'
+    if (method === 'PUT') return 'Update record'
+    if (method === 'DELETE') return 'Delete record'
+    return 'Read records'
+  }
   return 'Call Lark Open API'
 }
 

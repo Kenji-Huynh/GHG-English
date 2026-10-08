@@ -4,6 +4,7 @@
     currentYear,
     periodKey,
     periodLabel,
+    syncStatus,
   } from '../lib/ghg.js'
   import {
     loadSnapshots,
@@ -13,14 +14,12 @@
     runScheduledSnapshots,
     snapshotTotalsForCompany,
   } from '../lib/snapshots.js'
-  import { loadLarkSettings } from '../lib/larkSettings.js'
-  import { syncSnapshotToLark } from '../lib/larkBitable.js'
   import { COMPANIES } from '../lib/companies.js'
-  import { toastOk, toastErr, showErrorDetail } from '../lib/notify.js'
+  import { toastOk, toastErr } from '../lib/notify.js'
 
   let snapshots = $state(loadSnapshots())
-  let busy = $state(false)
   let selectedId = $state('')
+  let autoChecked = false
 
   const selected = $derived(snapshots.find((s) => s.id === selectedId) ?? snapshots[0] ?? null)
 
@@ -29,12 +28,26 @@
   })
 
   function refresh() {
+    if (!$syncStatus.lastSync) {
+      toastErr('Data is still loading from Lark — try again in a moment')
+      return
+    }
     const auto = runScheduledSnapshots()
     snapshots = loadSnapshots()
     if (auto.length) toastOk(`Auto-closed periods: ${auto.map((a) => a.label).join(', ')}`)
   }
 
+  $effect(() => {
+    if (autoChecked || !$syncStatus.lastSync) return
+    autoChecked = true
+    refresh()
+  })
+
   function closeCurrentMonth() {
+    if (!$syncStatus.lastSync) {
+      toastErr('Data is still loading from Lark — try again in a moment')
+      return
+    }
     const pk = periodKey($currentMonth, $currentYear)
     if (hasSnapshot(pk, 'month')) {
       toastErr(`Period ${periodLabel($currentMonth, $currentYear)} has already been closed`)
@@ -51,6 +64,10 @@
   }
 
   function closeCurrentYear() {
+    if (!$syncStatus.lastSync) {
+      toastErr('Data is still loading from Lark — try again in a moment')
+      return
+    }
     const y = String($currentYear)
     if (hasSnapshot(y, 'year')) {
       toastErr(`Year ${y} has already been closed`)
@@ -66,42 +83,17 @@
     toastOk(`Year ${y} closed`)
   }
 
-  async function syncLark() {
-    if (!selected) {
-      toastErr('Select a period snapshot to sync')
-      return
-    }
-    const s = loadLarkSettings()
-    if (!s.appId || !s.appSecret || !s.baseAppToken) {
-      toastErr('Lark not configured — please contact admin')
-      return
-    }
-    busy = true
-    try {
-      const r = await syncSnapshotToLark(selected, s)
-      toastOk(
-        `Lark Base — Office: ${r.office}, Trips: ${r.trips}, Commute: ${r.commute}${r.closeRows ? `, Summary: ${r.closeRows}` : ''}`,
-      )
-    } catch (e) {
-      await showErrorDetail(e, 'Send to Lark Base (close period) failed')
-    } finally {
-      busy = false
-    }
-  }
-
   function onDelete(id) {
     deleteSnapshot(id)
     snapshots = loadSnapshots()
     if (selectedId === id) selectedId = snapshots[0]?.id ?? ''
     toastOk('Snapshot deleted')
   }
-
-  refresh()
 </script>
 
 <div class="page-title">Close Period &amp; Summary</div>
 <div class="page-sub">
-  Automatically closes figures on the <strong>30th</strong> of each month and <strong>Dec 30</strong> for the full year. Data is saved as a snapshot (separate table) — can be synced to Lark Base.
+  Automatically closes figures on the <strong>30th</strong> of each month and <strong>Dec 30</strong> for the full year. A snapshot freezes the Lark Base figures at closing time and is kept in this browser.
 </div>
 
 <div class="card">
@@ -147,11 +139,6 @@
   <div class="card">
     <div class="card-head">
       <div class="card-head-left"><div class="card-title">Snapshot details</div></div>
-      {#if selected}
-        <button type="button" class="btn btn-primary" disabled={busy} onclick={syncLark}>
-          {busy ? 'Sending…' : 'Send to Lark Base'}
-        </button>
-      {/if}
     </div>
     <div class="card-body">
       {#if !selected}
@@ -183,7 +170,7 @@
           </div>
         </div>
         <p class="lark-preview-cols-hint">
-          Data rows: Office {selected.equip.filter((r) => r.confirmed !== false).length} · Business trips
+          Data rows: Office {selected.equip.length} · Business trips
           {selected.emptrips.length} · Commute {selected.commute.length}
         </p>
         <table class="close-co-table">
@@ -207,9 +194,6 @@
             {/each}
           </tbody>
         </table>
-        <p class="lark-preview-cols-hint" style="margin-top: 12px">
-          Lark: sends all 3 detail tables + summary table (if <code>VITE_LARK_TABLE_CLOSE</code> is set in env).
-        </p>
       {/if}
     </div>
   </div>

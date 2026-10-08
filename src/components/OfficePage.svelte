@@ -7,19 +7,34 @@
   import { get } from 'svelte/store'
   import {
     equipRows,
+    equipDrafts,
+    equipDraftRows,
     offSettings,
     periodLabel,
     currentMonth,
     currentYear,
     setCompanyLocation,
-    deleteEquipRow,
-    addEquipRow,
-    updateEquip,
-    selectSource,
-    isEquipInReport,
+    addEquipDraft,
+    updateEquipDraft,
+    selectDraftSource,
+    removeEquipDraft,
+    editEquipRecord,
+    saveEquipDraft,
+    deleteEquipRecord,
     selectedCompany,
   } from '../lib/ghg.js'
-  import { confirmDanger, toastOk, confirmAction, toastErr } from '../lib/notify.js'
+  import { confirmDanger, toastOk, confirmAction, toastErr, showErrorDetail } from '../lib/notify.js'
+
+  /** @type {Set<string>} */
+  let busyIds = $state(new Set())
+
+  /** @param {string} id @param {boolean} on */
+  function setBusy(id, on) {
+    const next = new Set(busyIds)
+    if (on) next.add(id)
+    else next.delete(id)
+    busyIds = next
+  }
 
   let location = $state('')
   let defaultCompany = $state(COMPANIES[0])
@@ -53,7 +68,6 @@
     let s1 = 0
     let s2 = 0
     for (const r of visibleEquipRows) {
-      if (!isEquipInReport(r)) continue
       const t = r.volume && r.ef ? (r.volume * r.ef) / 1000 : 0
       if (r.scope === 1) s1 += t
       else s2 += t
@@ -61,62 +75,94 @@
     return { s1, s2 }
   })
 
-  const confirmedEquipRows = $derived(visibleEquipRows.filter(isEquipInReport))
+  const confirmedEquipRows = $derived(visibleEquipRows)
 
-  /** Draft rows (not yet confirmed to summary) */
-  const draftEquipRows = $derived(visibleEquipRows.filter((r) => r.confirmed === false))
+  const draftEquipRows = $derived.by(() => {
+    if (!$selectedCompany) return $equipDraftRows
+    return $equipDraftRows.filter((r) => matchesCompany(r.company, $selectedCompany))
+  })
 
-  async function onDeleteRow(id) {
-    const ok = await confirmDanger('Delete equipment row?', 'This action cannot be undone.', 'Delete')
+  /** Record ids currently being edited in the input section */
+  const editingRecordIds = $derived(new Set($equipDraftRows.map((d) => d.recordId).filter(Boolean)))
+
+  async function onDeleteDraft(row) {
+    if (row.recordId) {
+      removeEquipDraft(row.id)
+      toastOk('Edit cancelled — Lark record unchanged')
+      return
+    }
+    const ok = await confirmDanger('Delete draft row?', 'This row has not been saved to Lark yet.', 'Delete')
     if (!ok) return
-    deleteEquipRow(id)
-    toastOk('Equipment row deleted')
+    removeEquipDraft(row.id)
+    toastOk('Draft row deleted')
   }
 
   async function onDeleteFromSummary(id) {
     const ok = await confirmDanger(
-      'Remove from summary?',
-      'The row will be permanently removed from the reporting period.',
+      'Delete this row?',
+      'The record will be permanently deleted from Lark Base.',
       'Delete',
     )
     if (!ok) return
-    deleteEquipRow(id)
-    toastOk('Removed from summary')
+    setBusy(id, true)
+    try {
+      await deleteEquipRecord(id)
+      toastOk('Deleted from Lark Base')
+    } catch (e) {
+      await showErrorDetail(e, 'Deleting from Lark Base failed')
+    } finally {
+      setBusy(id, false)
+    }
   }
 
-  function onEditFromSummary(id) {
-    updateEquip(id, 'confirmed', false)
-    toastOk('Row moved back to the input section above for editing')
+  function onEditFromSummary(row) {
+    if (!editEquipRecord(row)) {
+      toastErr('This row is already open for editing above')
+      return
+    }
+    toastOk('Row copied to the input section above — edit then click ✓ to save')
   }
 
   function onAddRow() {
-    addEquipRow()
-    const rows = get(equipRows)
-    const last = rows[rows.length - 1]
-    if (last) updateEquip(last.id, 'company', defaultCompany)
+    addEquipDraft(defaultCompany)
   }
 
   async function onConfirmRow(row) {
-    if (!row.source?.trim()) {
+    const fresh = get(equipDrafts).find((r) => r.id === row.id) ?? row
+    if (!fresh.source?.trim()) {
       toastErr('Please select an emission source')
       return
     }
-    if (!row.ef || row.ef <= 0) {
+    if (!fresh.ef || fresh.ef <= 0) {
       toastErr('Please enter a valid emission factor (EF)')
       return
     }
-    if (!row.volume || row.volume <= 0) {
+    if (!fresh.volume || fresh.volume <= 0) {
       toastErr('Please enter a volume greater than 0')
       return
     }
-    if (!isValidCompany(row.company || defaultCompany)) {
+    if (!isValidCompany(fresh.company || defaultCompany)) {
       toastErr('Please select a company')
       return
     }
-    const ok = await confirmAction('Add to summary?', '')
+    if (!fresh.company) updateEquipDraft(fresh.id, 'company', defaultCompany)
+    const ok = await confirmAction(fresh.recordId ? 'Save changes to Lark Base?' : 'Add to Lark Base?', '')
     if (!ok) return
-    updateEquip(row.id, 'confirmed', true)
-    toastOk('Row added to the summary table below')
+    setBusy(fresh.id, true)
+    try {
+      await saveEquipDraft(fresh.id)
+      toastOk(fresh.recordId ? 'Lark record updated' : 'Row saved to Lark Base')
+    } catch (e) {
+      await showErrorDetail(e, 'Saving to Lark Base failed')
+    } finally {
+      setBusy(fresh.id, false)
+    }
+  }
+
+  /** @param {string} id @param {string} raw */
+  function setEquipNumber(id, key, raw) {
+    const n = raw === '' ? 0 : Number(raw)
+    updateEquipDraft(id, key, Number.isFinite(n) ? n : 0)
   }
 </script>
 
@@ -178,8 +224,8 @@
         {#if $equipRows.length === 0}
           No equipment yet. Click "+ Add equipment row" to get started.
         {:else}
-          No rows in draft — confirmed rows are in the summary table below. Click "+ Add equipment row" or
-          <strong>Edit</strong> a row in the table below to make changes.
+          No rows being edited — saved rows are in the summary table below (live from Lark Base). Click
+          "+ Add equipment row" or <strong>Edit</strong> a row in the table below to make changes.
         {/if}
       </div>
     {:else}
@@ -196,12 +242,12 @@
               type="text"
               placeholder="Air conditioner, generator..."
               value={row.equipment}
-              onchange={(e) => updateEquip(row.id, 'equipment', e.currentTarget.value)}
+              oninput={(e) => updateEquipDraft(row.id, 'equipment', e.currentTarget.value)}
             />
             <select
               class="eq-span company-select"
               value={row.company || defaultCompany}
-              onchange={(e) => updateEquip(row.id, 'company', e.currentTarget.value)}
+              onchange={(e) => updateEquipDraft(row.id, 'company', e.currentTarget.value)}
               required
               aria-label="Company"
             >
@@ -212,7 +258,7 @@
             <select
               class="eq-span"
               value={row.source}
-              onchange={(e) => selectSource(row.id, e.currentTarget.value)}
+              onchange={(e) => selectDraftSource(row.id, e.currentTarget.value)}
             >
               <option value="">-- Select source --</option>
               {#each EMISSION_SOURCES as s}
@@ -221,7 +267,7 @@
             </select>
             <select
               value={row.unit}
-              onchange={(e) => updateEquip(row.id, 'unit', e.currentTarget.value)}
+              onchange={(e) => updateEquipDraft(row.id, 'unit', e.currentTarget.value)}
             >
               {#each UNIT_OPTIONS as u}
                 <option>{u}</option>
@@ -232,14 +278,14 @@
               placeholder="EF"
               value={row.ef || ''}
               step="any"
-              onchange={(e) => updateEquip(row.id, 'ef', +e.currentTarget.value)}
+              oninput={(e) => setEquipNumber(row.id, 'ef', e.currentTarget.value)}
             />
             <input
               class="eq-span"
               type="text"
               placeholder="DEFRA 2023 / MONRE VN..."
               value={row.efRef}
-              onchange={(e) => updateEquip(row.id, 'efRef', e.currentTarget.value)}
+              oninput={(e) => updateEquipDraft(row.id, 'efRef', e.currentTarget.value)}
             />
             <input
               type="number"
@@ -247,24 +293,28 @@
               value={row.volume || ''}
               min="0"
               step="any"
-              onchange={(e) => updateEquip(row.id, 'volume', +e.currentTarget.value)}
+              oninput={(e) => setEquipNumber(row.id, 'volume', e.currentTarget.value)}
             />
             <div class="eq-confirm-cell">
               <button
                 type="button"
                 class="btn-tick"
-                title="Confirm and add to summary table below"
+                title={row.recordId ? 'Save changes to Lark Base' : 'Save to Lark Base'}
                 aria-label="Confirm equipment row"
+                disabled={busyIds.has(row.id)}
                 onclick={() => onConfirmRow(row)}
               >
-                ✓
+                {busyIds.has(row.id) ? '…' : '✓'}
               </button>
             </div>
-            <RowActionIcons onDelete={() => onDeleteRow(row.id)} deleteTitle="Delete draft row" />
+            <RowActionIcons
+              onDelete={() => onDeleteDraft(row)}
+              deleteTitle={row.recordId ? 'Cancel edit' : 'Delete draft row'}
+            />
           </div>
           <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <span class="badge {row.scope === 1 ? 'scope-s1' : 'scope-s2'}">Scope {row.scope}</span>
-            <span class="eq-draft-pill">Not confirmed</span>
+            <span class="eq-draft-pill">{row.recordId ? 'Editing Lark record' : 'Not saved yet'}</span>
             {#if total > 0}
               <span style="font-size:11px;color:var(--text3);font-family:var(--mono)">
                 {row.volume} {row.unit} × {row.ef} kg/unit ÷ 1000 = {total.toFixed(4)} tonnes CO₂e
@@ -306,17 +356,15 @@
               <td colspan="9" style="text-align:center;color:var(--text3);padding:1.5rem">
                 {#if $equipRows.length === 0}
                   No data yet
-                {:else if draftEquipRows.length > 0}
-                  No rows in summary yet. Click ✓ on the rows above to add them here.
                 {:else}
-                  No confirmed rows yet.
+                  No rows for {$selectedCompany} in this period
                 {/if}
               </td>
             </tr>
           {:else}
-            {#each confirmedEquipRows as r}
+            {#each confirmedEquipRows as r (r.id)}
               {@const tot = r.volume && r.ef ? (r.volume * r.ef) / 1000 : 0}
-              <tr>
+              <tr class:trip-row-editing={editingRecordIds.has(r.id)} style:opacity={busyIds.has(r.id) ? 0.5 : null}>
                 <td>{r.equipment || '—'}</td>
                 <td>{r.company || '—'}</td>
                 <td>{r.source || '—'}</td>
@@ -329,10 +377,10 @@
                 <td class="num" style="font-weight:600;color:var(--accent)">{tot.toFixed(4)}</td>
                 <td class="eq-summary-actions">
                   <RowActionIcons
-                    onEdit={() => onEditFromSummary(r.id)}
+                    onEdit={() => onEditFromSummary(r)}
                     onDelete={() => onDeleteFromSummary(r.id)}
-                    editTitle="Edit — move to input section above"
-                    deleteTitle="Remove from summary"
+                    editTitle="Edit — copy to input section above"
+                    deleteTitle="Delete from Lark Base"
                   />
                 </td>
               </tr>

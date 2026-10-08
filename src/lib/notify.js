@@ -87,29 +87,3 @@ export async function confirmAction(title, text = '') {
 export function alertInfo(title, html) {
   return Swal.fire({ icon: 'info', title, html, confirmButtonText: 'Got it' })
 }
-
-/**
- * Choose Excel import mode: merge or replace sheet data.
- * @param {string} html — preview HTML (escaped if needed)
- * @returns {Promise<'merge'|'replace'|null>}
- */
-export async function confirmImportExcelMode(html) {
-  const r = await Swal.fire({
-    icon: 'question',
-    title: 'Import Excel into current period?',
-    html,
-    showCancelButton: true,
-    showDenyButton: true,
-    confirmButtonText: 'Merge (skip duplicates)',
-    denyButtonText: 'Replace with file',
-    cancelButtonText: 'Cancel',
-    confirmButtonColor: '#1A6B3C',
-    denyButtonColor: '#B85C00',
-    cancelButtonColor: '#6B6960',
-    reverseButtons: true,
-    width: 520,
-  })
-  if (r.isConfirmed) return 'merge'
-  if (r.isDenied) return 'replace'
-  return null
-}

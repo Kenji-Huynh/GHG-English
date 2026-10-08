@@ -137,6 +137,21 @@ export function migrateTripTransports(trip) {
   return out
 }
 
+/** @param {Record<string, unknown>} trip */
+export function formatTripTransportDetail(trip) {
+  const segs = migrateTripTransports(trip)
+  if (!segs.length) return ''
+  return segs
+    .map((s) => {
+      const n = Math.max(1, Number(s.count) || 1)
+      const parts = [s.note || s.type]
+      if (s.liters) parts.push(`${s.liters}L`)
+      if (s.km) parts.push(`${s.km}km`)
+      return `${parts.join(' ')}×${n}`
+    })
+    .join('; ')
+}
+
 export function defaultCabinLabel(ef) {
   const o = CABIN_OPTIONS.find((c) => c.value === ef)
   return o?.label ?? 'Economy'
