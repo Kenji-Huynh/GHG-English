@@ -207,7 +207,7 @@
   </div>
   <div class="card-body eq-equipment-body">
     <div class="eq-grid eq-grid-header">
-      <span>#</span>
+      <span class="eq-header-num">#</span>
       <span>Equipment</span>
       <span>Company</span>
       <span>Emission source</span>
