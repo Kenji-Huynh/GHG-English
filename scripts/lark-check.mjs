@@ -171,7 +171,9 @@ async function main() {
         problems++
       }
     }
-    const extra = [...fields.keys()].filter((n) => n !== 'ID' && !EXPECTED[label].includes(n))
+    const extra = [...fields.values()]
+      .filter((f) => f.type !== 1005 && !EXPECTED[label].includes(f.field_name))
+      .map((f) => f.field_name)
     if (extra.length) console.log(`  Extra columns on Base (ignored by app): ${extra.join(', ')}`)
 
     const { json: rj } = await larkJson(

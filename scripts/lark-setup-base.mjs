@@ -74,16 +74,17 @@ const TABLES = [
   {
     envKey: 'VITE_LARK_TABLE_FLIGHTS',
     name: 'Trip – Flights',
-    primary: F.title,
+    idName: 'Flight ID',
     link: { to: 'VITE_LARK_TABLE_TRIPS', field: F.trip, back: 'Flights' },
-    fields: [text(F.from), text(F.to), text(F.cabin), text(F.km), text(F.legs), text(F.co2)],
+    fields: [text(F.title), text(F.from), text(F.to), text(F.cabin), text(F.km), text(F.legs), text(F.co2)],
   },
   {
     envKey: 'VITE_LARK_TABLE_GROUND',
     name: 'Trip – Ground transport',
-    primary: G.title,
+    idName: 'Transport ID',
     link: { to: 'VITE_LARK_TABLE_TRIPS', field: G.trip, back: 'Ground transport' },
     fields: [
+      text(G.title),
       text(G.type),
       text(G.note),
       text(G.count),
@@ -98,9 +99,9 @@ const TABLES = [
   {
     envKey: 'VITE_LARK_TABLE_HOTELS',
     name: 'Trip – Hotel stays',
-    primary: H.title,
+    idName: 'Stay ID',
     link: { to: 'VITE_LARK_TABLE_TRIPS', field: H.trip, back: 'Hotel stays' },
-    fields: [text(H.name), text(H.type), text(H.nights), text(H.rooms), text(H.co2)],
+    fields: [text(H.title), text(H.name), text(H.type), text(H.nights), text(H.rooms), text(H.co2)],
   },
   {
     envKey: 'VITE_LARK_TABLE_COMMUTE',
@@ -195,9 +196,10 @@ async function listFields(token, app, tableId) {
   return j.data?.items || []
 }
 
-/** Column list for a table; the first one becomes the primary column. Link columns are added after creation. */
+/** Column list for a table; the first one (auto-number ID) becomes the primary column. Link columns are added after creation. */
 function columnsFor(spec, tableIds) {
-  const cols = spec.primary ? [text(spec.primary), idField, ...spec.fields] : [idField, ...spec.fields]
+  const id = spec.idName ? { ...idField, field_name: spec.idName } : idField
+  const cols = [id, ...spec.fields]
   if (spec.link) {
     cols.push({
       field_name: spec.link.field,
@@ -216,7 +218,7 @@ async function createTable(token, app, spec, cols) {
   if (j.code === 0) return j.data.table_id
   console.log(`  (ID as primary column rejected: ${j.msg} — retrying with ID added afterwards)`)
   j = await lark(`/open-apis/bitable/v1/apps/${app}/tables`, 'POST', token, {
-    table: { name: spec.name, default_view_name: 'Grid', fields: initial.filter((c) => c !== idField) },
+    table: { name: spec.name, default_view_name: 'Grid', fields: initial.filter((c) => c.type !== 1005) },
   })
   if (j.code !== 0) throw new Error(`Create table "${spec.name}": ${j.msg} (${j.code})`)
   return j.data.table_id

@@ -43,7 +43,7 @@ export const TRIP_COLS = {
 export const COL_TRIP_LINK = 'Trip'
 
 export const FLIGHT_COLS = {
-  title: 'Flight',
+  title: 'Flight Name',
   trip: COL_TRIP_LINK,
   from: 'From',
   to: 'To',
@@ -54,7 +54,7 @@ export const FLIGHT_COLS = {
 }
 
 export const GROUND_COLS = {
-  title: 'Transport',
+  title: 'Transport Name',
   trip: COL_TRIP_LINK,
   type: 'Type',
   note: 'Note',
@@ -68,7 +68,7 @@ export const GROUND_COLS = {
 }
 
 export const HOTEL_COLS = {
-  title: 'Stay',
+  title: 'Stay Name',
   trip: COL_TRIP_LINK,
   name: 'Name / location',
   type: 'Accommodation type',
