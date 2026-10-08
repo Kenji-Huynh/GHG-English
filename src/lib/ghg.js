@@ -2,21 +2,39 @@ import { writable, derived, get } from 'svelte/store'
 import * as DB from './db.js'
 import { EMISSION_SOURCES, COMMUTE_VEHICLES } from './constants.js'
 import { ALL_COMPANIES, matchesCompany, normalizeCompany } from './companies.js'
-import { calcCommute, formatHotelStaysDetail, formatTripTransportDetail } from './calculations.js'
+import { calcCommute } from './calculations.js'
 import {
   OFFICE_COLS as O,
   TRIP_COLS as T,
   COMMUTE_COLS as M,
+  FLIGHT_COLS as FC,
+  GROUND_COLS as GC,
+  HOTEL_COLS as HC,
   larkConfig,
   isLarkConfigured,
   listAllRecords,
   createRecord,
   updateRecord,
   deleteRecord,
+  batchCreateRecords,
+  batchUpdateRecords,
+  batchDeleteRecords,
   readText,
   readNumber,
   readJson,
 } from './larkDb.js'
+import {
+  isFilledLeg,
+  isFilledSegment,
+  isFilledStay,
+  legToFields,
+  legFromRecord,
+  segmentToFields,
+  segmentFromRecord,
+  stayToFields,
+  stayFromRecord,
+  tripTotals,
+} from './tripChildren.js'
 
 const now = new Date()
 const POLL_MS = 5000
@@ -167,21 +185,57 @@ function officeToFields(row, period) {
   }
 }
 
-/** @param {{ record_id: string, fields: Record<string, unknown> }} rec */
-function tripFromRecord(rec) {
+/**
+ * @typedef {{ tripId: string, row: any, stored: { title: string, co2: string } }} ParsedChild
+ * @typedef {{ flights: Map<string, ParsedChild[]>, ground: Map<string, ParsedChild[]>, hotels: Map<string, ParsedChild[]> }} TripChildren
+ */
+
+/** @param {ParsedChild[]} list @returns {Map<string, ParsedChild[]>} */
+function groupByTrip(list) {
+  const m = new Map()
+  for (const c of list) {
+    if (!c.tripId) continue
+    if (!m.has(c.tripId)) m.set(c.tripId, [])
+    m.get(c.tripId).push(c)
+  }
+  return m
+}
+
+/**
+ * @param {{ record_id: string, fields: Record<string, unknown> }} rec
+ * @param {TripChildren} kids
+ */
+function tripFromRecord(rec, kids) {
   const f = rec.fields || {}
-  const d = readJson(f[T.appData])
   const period = readText(f[T.period])
-  const co2Air = readNumber(f[T.co2Air])
-  const co2Ground = readNumber(f[T.co2Ground])
-  const co2Hotel = readNumber(f[T.co2Hotel])
-  const co2Total = readText(f[T.co2Total]) ? readNumber(f[T.co2Total]) : round1(co2Air + co2Ground + co2Hotel)
+  const rows = (/** @type {Map<string, ParsedChild[]>} */ m) => (m.get(rec.record_id) || []).map((c) => c.row)
+  const flightLegs = rows(kids.flights)
+  const otherTransports = rows(kids.ground)
+  const hotelStays = rows(kids.hotels)
+  const hasChildren = flightLegs.length + otherTransports.length + hotelStays.length > 0
+  const storedText = {
+    co2Air: readText(f[T.co2Air]),
+    co2Ground: readText(f[T.co2Ground]),
+    co2Hotel: readText(f[T.co2Hotel]),
+    co2Total: readText(f[T.co2Total]),
+  }
+  const stored = {
+    co2Air: readNumber(storedText.co2Air),
+    co2Ground: readNumber(storedText.co2Ground),
+    co2Hotel: readNumber(storedText.co2Hotel),
+    co2Total: storedText.co2Total
+      ? readNumber(storedText.co2Total)
+      : round1(readNumber(storedText.co2Air) + readNumber(storedText.co2Ground) + readNumber(storedText.co2Hotel)),
+  }
+  const totals = hasChildren ? tripTotals({ flightLegs, otherTransports, hotelStays }) : stored
   return {
-    flightLegs: Array.isArray(d.flightLegs) ? d.flightLegs : [],
-    otherTransports: Array.isArray(d.otherTransports) ? d.otherTransports : [],
-    hotelStays: Array.isArray(d.hotelStays) ? d.hotelStays : [],
-    proj: d.proj ?? '',
-    note: d.note ?? '',
+    flightLegs,
+    otherTransports,
+    hotelStays,
+    hasChildren,
+    storedText,
+    proj: readText(f[T.proj]),
+    note: readText(f[T.note]),
     id: rec.record_id,
     pk: parsePeriodLabel(period),
     period,
@@ -195,10 +249,7 @@ function tripFromRecord(rec) {
     to: readText(f[T.to]),
     dateFrom: readText(f[T.dateFrom]),
     dateTo: readText(f[T.dateTo]),
-    co2Air,
-    co2Ground,
-    co2Hotel,
-    co2Total,
+    ...totals,
   }
 }
 
@@ -216,19 +267,19 @@ function tripToFields(entry, period) {
     [T.to]: entry.to || '',
     [T.dateFrom]: entry.dateFrom || '',
     [T.dateTo]: entry.dateTo || '',
-    [T.co2Air]: entry.co2Air ?? '',
-    [T.co2Ground]: entry.co2Ground ?? '',
-    [T.co2Hotel]: entry.co2Hotel ?? '',
-    [T.co2Total]: entry.co2Total ?? '',
-    [T.transportDetail]: formatTripTransportDetail(entry),
-    [T.hotelDetail]: formatHotelStaysDetail(entry),
-    [T.appData]: JSON.stringify({
-      flightLegs: entry.flightLegs || [],
-      otherTransports: entry.otherTransports || [],
-      hotelStays: entry.hotelStays || [],
-      proj: entry.proj || '',
-      note: entry.note || '',
-    }),
+    [T.proj]: entry.proj || '',
+    [T.note]: entry.note || '',
+    ...tripTotalFields(tripTotals(entry)),
+  }
+}
+
+/** @param {{ co2Air: number, co2Ground: number, co2Hotel: number, co2Total: number }} t */
+function tripTotalFields(t) {
+  return {
+    [T.co2Air]: t.co2Air,
+    [T.co2Ground]: t.co2Ground,
+    [T.co2Hotel]: t.co2Hotel,
+    [T.co2Total]: t.co2Total,
   }
 }
 
@@ -358,6 +409,73 @@ function fixCommuteTotals(rows) {
   }
 }
 
+/**
+ * When a flight / transport / hotel row is edited in Lark: rewrite its title + CO₂,
+ * then the trip's CO₂ totals. Trips without child rows are left alone.
+ * @param {any[]} trips
+ * @param {{ flights: ParsedChild[], ground: ParsedChild[], hotels: ParsedChild[] }} children
+ */
+function fixTripTotals(trips, children) {
+  const { tables } = larkConfig()
+  const childSpecs = [
+    { table: tables.flights, list: children.flights, toFields: legToFields, cols: FC },
+    { table: tables.ground, list: children.ground, toFields: segmentToFields, cols: GC },
+    { table: tables.hotels, list: children.hotels, toFields: stayToFields, cols: HC },
+  ]
+  for (const { table, list, toFields, cols } of childSpecs) {
+    const stale = list
+      .filter((c) => c.tripId && !fixingTotals.has(c.row.id))
+      .map((c) => {
+        const want = toFields(c.row, c.tripId)
+        return { c, title: String(want[cols.title]), co2: String(want[cols.co2]) }
+      })
+      .filter((x) => x.title !== x.c.stored.title || x.co2 !== x.c.stored.co2)
+    if (!stale.length) continue
+    stale.forEach((x) => fixingTotals.add(x.c.row.id))
+    runWrite(() =>
+      batchUpdateRecords(
+        table,
+        stale.map((x) => ({ id: x.c.row.id, fields: { [cols.title]: x.title, [cols.co2]: x.co2 } })),
+      ),
+    )
+      .catch((e) => console.warn('[Lark] could not update trip detail rows', e))
+      .finally(() => stale.forEach((x) => fixingTotals.delete(x.c.row.id)))
+  }
+
+  const staleTrips = trips.filter(
+    (t) =>
+      t.hasChildren &&
+      !fixingTotals.has(t.id) &&
+      (t.storedText.co2Air !== String(t.co2Air) ||
+        t.storedText.co2Ground !== String(t.co2Ground) ||
+        t.storedText.co2Hotel !== String(t.co2Hotel) ||
+        t.storedText.co2Total !== String(t.co2Total)),
+  )
+  if (!staleTrips.length) return
+  staleTrips.forEach((t) => fixingTotals.add(t.id))
+  runWrite(() =>
+    batchUpdateRecords(
+      tables.trips,
+      staleTrips.map((t) => ({ id: t.id, fields: tripTotalFields(t) })),
+    ),
+  )
+    .then(() =>
+      staleTrips.forEach((t) =>
+        upsertLocal(allTrips, {
+          ...t,
+          storedText: {
+            co2Air: String(t.co2Air),
+            co2Ground: String(t.co2Ground),
+            co2Hotel: String(t.co2Hotel),
+            co2Total: String(t.co2Total),
+          },
+        }),
+      ),
+    )
+    .catch((e) => console.warn('[Lark] could not update trip totals', e))
+    .finally(() => staleTrips.forEach((t) => fixingTotals.delete(t.id)))
+}
+
 export async function refreshFromLark() {
   if (!isLarkConfigured()) {
     syncStatus.set({
@@ -373,20 +491,35 @@ export async function refreshFromLark() {
     syncStatus.update((s) => (s.lastSync ? s : { ...s, state: 'loading' }))
     try {
       const { tables } = larkConfig()
-      const [o, t, c] = await Promise.all([
+      const [o, t, fl, gr, ho, c] = await Promise.all([
         listAllRecords(tables.office),
         listAllRecords(tables.trips),
+        listAllRecords(tables.flights),
+        listAllRecords(tables.ground),
+        listAllRecords(tables.hotels),
         listAllRecords(tables.commute),
       ])
       if (seq !== writeSeq || pendingWrites > 0) return
       const office = o.map(officeFromRecord)
       const commute = c.map(commuteFromRecord)
+      const children = {
+        flights: fl.map(legFromRecord),
+        ground: gr.map(segmentFromRecord),
+        hotels: ho.map(stayFromRecord),
+      }
+      const kids = {
+        flights: groupByTrip(children.flights),
+        ground: groupByTrip(children.ground),
+        hotels: groupByTrip(children.hotels),
+      }
+      const trips = t.map((r) => tripFromRecord(r, kids))
       allEquip.set(office)
-      allTrips.set(t.map(tripFromRecord))
+      allTrips.set(trips)
       allCommute.set(commute)
       syncStatus.set({ state: 'ok', lastSync: Date.now(), error: null })
       fixOfficeTotals(office)
       fixCommuteTotals(commute)
+      fixTripTotals(trips, children)
     } catch (e) {
       syncStatus.update((s) => ({ ...s, state: 'error', error: e }))
     }
@@ -530,12 +663,61 @@ function empTripSignature(entry) {
   ].join('|')
 }
 
+/** Drop the empty placeholder rows the form always keeps */
+function filledParts(entry) {
+  return {
+    flightLegs: (entry.flightLegs || []).filter(isFilledLeg),
+    otherTransports: (entry.otherTransports || []).filter(isFilledSegment),
+    hotelStays: (entry.hotelStays || []).filter(isFilledStay),
+  }
+}
+
+/**
+ * Make one child table match the form: update rows that still exist, create new ones, delete removed ones.
+ * @param {string} table
+ * @param {string} tripId
+ * @param {any[]} items rows from the form (Lark rows keep their record id as `id`)
+ * @param {any[]} existing rows currently stored for this trip
+ * @param {(row: any, tripId: string) => Record<string, unknown>} toFields
+ * @param {(rec: any) => ParsedChild} fromRecord
+ */
+async function syncChildRows(table, tripId, items, existing, toFields, fromRecord) {
+  const existingIds = new Set(existing.map((r) => r.id))
+  const keep = items.filter((r) => existingIds.has(r.id))
+  const add = items.filter((r) => !existingIds.has(r.id))
+  const keptIds = new Set(keep.map((r) => r.id))
+  const remove = existing.filter((r) => !keptIds.has(r.id)).map((r) => r.id)
+  const [updated, created] = await Promise.all([
+    keep.length ? batchUpdateRecords(table, keep.map((r) => ({ id: r.id, fields: toFields(r, tripId) }))) : [],
+    add.length ? batchCreateRecords(table, add.map((r) => toFields(r, tripId))) : [],
+  ])
+  if (remove.length) await batchDeleteRecords(table, remove)
+  const byId = new Map([...updated, ...created].map((rec) => [rec.record_id, fromRecord(rec).row]))
+  return [...keep.map((r) => byId.get(r.id) ?? r), ...created.map((rec) => fromRecord(rec).row)]
+}
+
+/** Write the trip header + its flight / transport / hotel rows */
+async function saveTrip(tripId, entry, period, existing) {
+  const { tables } = larkConfig()
+  const parts = filledParts(entry)
+  const header = tripToFields({ ...entry, ...parts }, period)
+  const rec = tripId ? await updateRecord(tables.trips, tripId, header) : await createRecord(tables.trips, header)
+  const id = rec.record_id
+  const [flightLegs, otherTransports, hotelStays] = await Promise.all([
+    syncChildRows(tables.flights, id, parts.flightLegs, existing?.flightLegs || [], legToFields, legFromRecord),
+    syncChildRows(tables.ground, id, parts.otherTransports, existing?.otherTransports || [], segmentToFields, segmentFromRecord),
+    syncChildRows(tables.hotels, id, parts.hotelStays, existing?.hotelStays || [], stayToFields, stayFromRecord),
+  ])
+  const kids = (/** @type {any[]} */ rows) => new Map([[id, rows.map((row) => ({ tripId: id, row, stored: { title: '', co2: '' } }))]])
+  return tripFromRecord(rec, { flights: kids(flightLegs), ground: kids(otherTransports), hotels: kids(hotelStays) })
+}
+
 /** @param {Record<string, any>} entry @returns {Promise<boolean>} false when a duplicate exists */
 export async function addEmpTrip(entry) {
   const sig = empTripSignature(entry)
   if (get(empTrips).some((x) => empTripSignature(x) === sig)) return false
-  const rec = await runWrite(() => createRecord(larkConfig().tables.trips, tripToFields(entry, currentPeriodText())))
-  upsertLocal(allTrips, tripFromRecord(rec))
+  const trip = await runWrite(() => saveTrip('', entry, currentPeriodText(), null))
+  upsertLocal(allTrips, trip)
   refreshFromLark()
   return true
 }
@@ -545,16 +727,25 @@ export async function updateEmpTripById(id, entry) {
   const sig = empTripSignature(entry)
   if (get(empTrips).some((x) => x.id !== id && empTripSignature(x) === sig)) return false
   const existing = get(allTrips).find((x) => x.id === id)
-  const period = existing?.period || currentPeriodText()
-  const rec = await runWrite(() => updateRecord(larkConfig().tables.trips, id, tripToFields(entry, period)))
-  upsertLocal(allTrips, tripFromRecord(rec))
+  const trip = await runWrite(() => saveTrip(id, entry, existing?.period || currentPeriodText(), existing))
+  upsertLocal(allTrips, trip)
   refreshFromLark()
   return true
 }
 
-/** @param {string} id */
+/** Deletes the trip and its flight / transport / hotel rows */
 export async function deleteEmpTripById(id) {
-  await runWrite(() => deleteRecord(larkConfig().tables.trips, id))
+  const { tables } = larkConfig()
+  const existing = get(allTrips).find((x) => x.id === id)
+  await runWrite(async () => {
+    const ids = (/** @type {any[] | undefined} */ rows) => (rows || []).map((r) => r.id)
+    await Promise.all([
+      batchDeleteRecords(tables.flights, ids(existing?.flightLegs)),
+      batchDeleteRecords(tables.ground, ids(existing?.otherTransports)),
+      batchDeleteRecords(tables.hotels, ids(existing?.hotelStays)),
+    ])
+    await deleteRecord(tables.trips, id)
+  })
   removeLocal(allTrips, id)
   refreshFromLark()
 }

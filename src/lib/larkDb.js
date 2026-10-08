@@ -5,59 +5,8 @@
  */
 
 import { LarkApiError, inferLarkStep, throwLarkError } from './larkError.js'
-import { loadLarkSettings } from './larkSettings.js'
 
-export const COL_PERIOD = 'Reporting Period'
-export const COL_APP_DATA = 'App data (JSON)'
-
-export const OFFICE_COLS = {
-  period: COL_PERIOD,
-  company: 'Company',
-  equipment: 'Equipment',
-  source: 'Emission Source',
-  scope: 'Scope',
-  unit: 'Unit',
-  volume: 'Volume',
-  ef: 'EF (kg CO₂e/unit)',
-  efRef: 'EF Reference',
-  total: 'Total GHG (tonnes CO₂e)',
-}
-
-export const TRIP_COLS = {
-  period: COL_PERIOD,
-  name: 'Full Name',
-  empId: 'Emp ID',
-  company: 'Company',
-  dept: 'Department',
-  trip: 'Trip Name',
-  purpose: 'Purpose',
-  from: 'From',
-  to: 'To',
-  dateFrom: 'Departure Date',
-  dateTo: 'Return Date',
-  co2Air: 'CO₂ flight (kg)',
-  co2Ground: 'CO₂ ground (kg)',
-  co2Hotel: 'CO₂ accommodation (kg)',
-  co2Total: 'Total (kg CO₂e)',
-  transportDetail: 'Transport details',
-  hotelDetail: 'Accommodation details',
-  appData: COL_APP_DATA,
-}
-
-export const COMMUTE_COLS = {
-  period: COL_PERIOD,
-  name: 'Full Name',
-  empId: 'Emp ID',
-  company: 'Company',
-  dept: 'Department',
-  vehicle: 'Vehicle',
-  km: 'One-way km',
-  days: 'Working days / Month',
-  wfh: 'WFH (days/month)',
-  carpool: 'Carpool (people)',
-  co2: 'CO₂e (kg)',
-  appData: COL_APP_DATA,
-}
+export * from './larkSchema.js'
 
 /** Lark codes meaning the tenant token is invalid / expired */
 const TOKEN_EXPIRED_CODES = new Set([99991661, 99991663, 99991668, 99991677])
@@ -78,23 +27,27 @@ export function larkOpenApiPrefix() {
   return '/api/lark'
 }
 
+const env = (/** @type {string} */ v) => String(v ?? '').trim()
+
 export function larkConfig() {
-  const s = loadLarkSettings()
   return {
-    appId: s.appId.trim(),
-    appSecret: s.appSecret.trim(),
-    app: s.baseAppToken.trim(),
+    appId: env(import.meta.env.VITE_LARK_APP_ID),
+    appSecret: env(import.meta.env.VITE_LARK_APP_SECRET),
+    app: env(import.meta.env.VITE_LARK_BASE_APP_TOKEN),
     tables: {
-      office: s.tableOffice.trim(),
-      trips: s.tableTrips.trim(),
-      commute: s.tableCommute.trim(),
+      office: env(import.meta.env.VITE_LARK_TABLE_OFFICE),
+      trips: env(import.meta.env.VITE_LARK_TABLE_TRIPS),
+      flights: env(import.meta.env.VITE_LARK_TABLE_FLIGHTS),
+      ground: env(import.meta.env.VITE_LARK_TABLE_GROUND),
+      hotels: env(import.meta.env.VITE_LARK_TABLE_HOTELS),
+      commute: env(import.meta.env.VITE_LARK_TABLE_COMMUTE),
     },
   }
 }
 
 export function isLarkConfigured() {
   const c = larkConfig()
-  return !!(c.appId && c.appSecret && c.app && c.tables.office && c.tables.trips && c.tables.commute)
+  return !!(c.appId && c.appSecret && c.app && Object.values(c.tables).every(Boolean))
 }
 
 /**
@@ -228,11 +181,16 @@ export async function listAllRecords(tableId) {
   return out
 }
 
-/** Empty values are omitted on create and cleared (null) on update */
+/** Empty values are omitted on create and cleared (null) on update. Arrays (Link cells) pass through. */
 function cleanFields(fields, forUpdate) {
-  /** @type {Record<string, string | null>} */
+  /** @type {Record<string, string | string[] | null>} */
   const out = {}
   for (const [k, v] of Object.entries(fields)) {
+    if (Array.isArray(v)) {
+      if (v.length) out[k] = v.map(String)
+      else if (forUpdate) out[k] = null
+      continue
+    }
     const s = v == null ? '' : String(v)
     if (s === '') {
       if (forUpdate) out[k] = null
@@ -268,43 +226,51 @@ export async function deleteRecord(tableId, recordId) {
   await api(`${recordsPath(tableId)}/${encodeURIComponent(recordId)}`, { method: 'DELETE', tableId })
 }
 
-/** Lark returns Text as string or rich-text segments, Select as string, numbers as number */
-export function readText(v) {
-  if (v == null) return ''
-  if (typeof v === 'string') return v.trim()
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
-  if (Array.isArray(v)) return v.map((x) => readText(x)).join('').trim()
-  if (typeof v === 'object') {
-    const o = /** @type {Record<string, unknown>} */ (v)
-    if ('text' in o) return readText(o.text)
-    if ('value' in o) return readText(o.value)
-    if ('name' in o) return readText(o.name)
+const BATCH = 500
+
+/**
+ * @param {string} tableId @param {Record<string, unknown>[]} list
+ * @returns {Promise<Array<{ record_id: string, fields: Record<string, unknown> }>>}
+ */
+export async function batchCreateRecords(tableId, list) {
+  const out = []
+  for (let i = 0; i < list.length; i += BATCH) {
+    const data = await api(`${recordsPath(tableId)}/batch_create`, {
+      method: 'POST',
+      body: { records: list.slice(i, i + BATCH).map((f) => ({ fields: cleanFields(f, false) })) },
+      tableId,
+    })
+    out.push(...(data.records || []))
   }
-  return ''
+  return out
 }
 
-/** Accepts "1,234.5", "1.4937", and a lone decimal comma "1,4937" */
-export function readNumber(v) {
-  if (typeof v === 'number') return Number.isFinite(v) ? v : 0
-  let s = readText(v).replace(/\s/g, '')
-  if (!s) return 0
-  if (s.includes(',') && !s.includes('.') && /^-?\d+,\d+$/.test(s) && !/^-?\d{1,3},\d{3}$/.test(s)) {
-    s = s.replace(',', '.')
-  } else {
-    s = s.replace(/,/g, '')
+/**
+ * @param {string} tableId @param {Array<{ id: string, fields: Record<string, unknown> }>} list
+ * @returns {Promise<Array<{ record_id: string, fields: Record<string, unknown> }>>}
+ */
+export async function batchUpdateRecords(tableId, list) {
+  const out = []
+  for (let i = 0; i < list.length; i += BATCH) {
+    const data = await api(`${recordsPath(tableId)}/batch_update`, {
+      method: 'POST',
+      body: {
+        records: list.slice(i, i + BATCH).map((r) => ({ record_id: r.id, fields: cleanFields(r.fields, true) })),
+      },
+      tableId,
+    })
+    out.push(...(data.records || []))
   }
-  const n = parseFloat(s)
-  return Number.isFinite(n) ? n : 0
+  return out
 }
 
-/** @param {unknown} v */
-export function readJson(v) {
-  const s = readText(v)
-  if (!s) return {}
-  try {
-    const o = JSON.parse(s)
-    return o && typeof o === 'object' ? o : {}
-  } catch {
-    return {}
+/** @param {string} tableId @param {string[]} ids */
+export async function batchDeleteRecords(tableId, ids) {
+  for (let i = 0; i < ids.length; i += BATCH) {
+    await api(`${recordsPath(tableId)}/batch_delete`, {
+      method: 'POST',
+      body: { records: ids.slice(i, i + BATCH) },
+      tableId,
+    })
   }
 }

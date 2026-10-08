@@ -42,6 +42,8 @@ export class LarkApiError extends Error {
 export function inferLarkStep(path, method = 'GET') {
   if (path.includes('tenant_access_token')) return 'Get token (App ID / Secret)'
   if (path.includes('/records')) {
+    if (path.includes('/batch_update')) return 'Update records'
+    if (path.includes('/batch_delete')) return 'Delete records'
     if (method === 'POST') return 'Create record'
     if (method === 'PUT') return 'Update record'
     if (method === 'DELETE') return 'Delete record'

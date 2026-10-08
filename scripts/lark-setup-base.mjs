@@ -6,6 +6,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { COL_APP_DATA, TRIP_COLS as T, FLIGHT_COLS as F, GROUND_COLS as G, HOTEL_COLS as H } from '../src/lib/larkSchema.js'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const envPath = resolve(root, '.env.local')
@@ -13,8 +14,8 @@ const LARK = 'https://open.larksuite.com'
 
 const COMPANIES = ['ECS', 'LEONG LEE', 'MLOG', 'SPEC HUB', 'SUNNY AUTO', 'TREE MARINE']
 
-/** Holds nested data (flight legs, transports, hotels…) the web app needs to re-open a record for editing */
-const APP_DATA = 'App data (JSON)'
+/** Commute keeps a few extra values (EF, months) the web app needs to re-open a record for editing */
+const APP_DATA = COL_APP_DATA
 
 const text = (name) => ({ field_name: name, type: 1 })
 const companyField = {
@@ -49,26 +50,57 @@ const TABLES = [
     envKey: 'VITE_LARK_TABLE_TRIPS',
     name: 'Employees (Scope 3)',
     fields: [
-      text('Reporting Period'),
-      text('Full Name'),
-      text('Emp ID'),
+      text(T.period),
+      text(T.name),
+      text(T.empId),
       companyField,
-      text('Department'),
-      text('Trip Name'),
-      text('Purpose'),
-      text('From'),
-      text('To'),
-      text('Departure Date'),
-      text('Return Date'),
-      text('CO₂ flight (kg)'),
-      text('CO₂ ground (kg)'),
-      text('CO₂ accommodation (kg)'),
-      text('Total (kg CO₂e)'),
-      text('Transport details'),
-      text('Accommodation details'),
-      text(APP_DATA),
+      text(T.dept),
+      text(T.trip),
+      text(T.purpose),
+      text(T.from),
+      text(T.to),
+      text(T.dateFrom),
+      text(T.dateTo),
+      text(T.proj),
+      text(T.note),
+      text(T.co2Air),
+      text(T.co2Ground),
+      text(T.co2Hotel),
+      text(T.co2Total),
     ],
-    hidden: [APP_DATA],
+    /** Replaced by the Flights / Ground transport / Hotel stays tables */
+    remove: ['Transport details', 'Accommodation details', APP_DATA],
+  },
+  {
+    envKey: 'VITE_LARK_TABLE_FLIGHTS',
+    name: 'Trip – Flights',
+    primary: F.title,
+    link: { to: 'VITE_LARK_TABLE_TRIPS', field: F.trip, back: 'Flights' },
+    fields: [text(F.from), text(F.to), text(F.cabin), text(F.km), text(F.legs), text(F.co2)],
+  },
+  {
+    envKey: 'VITE_LARK_TABLE_GROUND',
+    name: 'Trip – Ground transport',
+    primary: G.title,
+    link: { to: 'VITE_LARK_TABLE_TRIPS', field: G.trip, back: 'Ground transport' },
+    fields: [
+      text(G.type),
+      text(G.note),
+      text(G.count),
+      text(G.km),
+      text(G.liters),
+      text(G.ef),
+      text(G.energyRate),
+      text(G.gridEF),
+      text(G.co2),
+    ],
+  },
+  {
+    envKey: 'VITE_LARK_TABLE_HOTELS',
+    name: 'Trip – Hotel stays',
+    primary: H.title,
+    link: { to: 'VITE_LARK_TABLE_TRIPS', field: H.trip, back: 'Hotel stays' },
+    fields: [text(H.name), text(H.type), text(H.nights), text(H.rooms), text(H.co2)],
   },
   {
     envKey: 'VITE_LARK_TABLE_COMMUTE',
@@ -163,30 +195,53 @@ async function listFields(token, app, tableId) {
   return j.data?.items || []
 }
 
-async function createTable(token, app, spec) {
-  const withId = [idField, ...spec.fields]
+/** Column list for a table; the first one becomes the primary column. Link columns are added after creation. */
+function columnsFor(spec, tableIds) {
+  const cols = spec.primary ? [text(spec.primary), idField, ...spec.fields] : [idField, ...spec.fields]
+  if (spec.link) {
+    cols.push({
+      field_name: spec.link.field,
+      type: 21,
+      property: { table_id: tableIds[spec.link.to], back_field_name: spec.link.back },
+    })
+  }
+  return cols
+}
+
+async function createTable(token, app, spec, cols) {
+  const initial = cols.filter((c) => c.type !== 21)
   let j = await lark(`/open-apis/bitable/v1/apps/${app}/tables`, 'POST', token, {
-    table: { name: spec.name, default_view_name: 'Grid', fields: withId },
+    table: { name: spec.name, default_view_name: 'Grid', fields: initial },
   })
   if (j.code === 0) return j.data.table_id
   console.log(`  (ID as primary column rejected: ${j.msg} — retrying with ID added afterwards)`)
   j = await lark(`/open-apis/bitable/v1/apps/${app}/tables`, 'POST', token, {
-    table: { name: spec.name, default_view_name: 'Grid', fields: spec.fields },
+    table: { name: spec.name, default_view_name: 'Grid', fields: initial.filter((c) => c !== idField) },
   })
   if (j.code !== 0) throw new Error(`Create table "${spec.name}": ${j.msg} (${j.code})`)
-  const tableId = j.data.table_id
-  await sleep(300)
-  const f = await lark(`/open-apis/bitable/v1/apps/${app}/tables/${tableId}/fields`, 'POST', token, idField)
-  if (f.code !== 0) console.log(`  WARN: could not add ID column: ${f.msg}`)
-  return tableId
+  return j.data.table_id
 }
 
-async function ensureFields(token, app, tableId, spec) {
-  const have = new Set((await listFields(token, app, tableId)).map((f) => f.field_name))
-  for (const f of [idField, ...spec.fields]) {
-    if (have.has(f.field_name)) continue
+async function ensureFields(token, app, tableId, cols) {
+  const have = new Map((await listFields(token, app, tableId)).map((f) => [f.field_name, f]))
+  for (const f of cols) {
+    const cur = have.get(f.field_name)
+    if (cur) {
+      if (f.type === 21 && cur.type !== 21) console.log(`  WARN: "${f.field_name}" exists but is not a Link column`)
+      continue
+    }
     const j = await lark(`/open-apis/bitable/v1/apps/${app}/tables/${tableId}/fields`, 'POST', token, f)
-    console.log(j.code === 0 ? `  + added column "${f.field_name}"` : `  WARN: "${f.field_name}": ${j.msg}`)
+    console.log(j.code === 0 ? `  + added column "${f.field_name}"` : `  WARN: "${f.field_name}": ${j.msg} (${j.code})`)
+    await sleep(200)
+  }
+}
+
+async function removeFields(token, app, tableId, spec) {
+  if (!spec.remove?.length) return
+  for (const f of await listFields(token, app, tableId)) {
+    if (!spec.remove.includes(f.field_name)) continue
+    const j = await lark(`/open-apis/bitable/v1/apps/${app}/tables/${tableId}/fields/${f.field_id}`, 'DELETE', token)
+    console.log(j.code === 0 ? `  - removed column "${f.field_name}"` : `  WARN: could not remove "${f.field_name}": ${j.msg}`)
     await sleep(200)
   }
 }
@@ -249,16 +304,19 @@ async function main() {
 
   for (const spec of TABLES) {
     const existing = before.find((t) => t.name === spec.name)
+    const cols = columnsFor(spec, updates)
     let tableId
     if (existing) {
       tableId = existing.table_id
       console.log(`\n"${spec.name}" already exists (${tableId}) — checking columns`)
-      await ensureFields(token, app, tableId, spec)
     } else {
       console.log(`\nCreating "${spec.name}"…`)
-      tableId = await createTable(token, app, spec)
+      tableId = await createTable(token, app, spec, cols)
       console.log(`  ✓ created ${tableId}`)
+      await sleep(300)
     }
+    await ensureFields(token, app, tableId, cols)
+    await removeFields(token, app, tableId, spec)
     await hideFields(token, app, tableId, spec)
     ours.add(tableId)
     updates[spec.envKey] = tableId

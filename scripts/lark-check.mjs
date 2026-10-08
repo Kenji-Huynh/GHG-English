@@ -6,6 +6,15 @@
 import { readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  OFFICE_COLS,
+  TRIP_COLS,
+  FLIGHT_COLS,
+  GROUND_COLS,
+  HOTEL_COLS,
+  COMMUTE_COLS,
+  COL_TRIP_LINK,
+} from '../src/lib/larkSchema.js'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LARK = 'https://open.larksuite.com'
@@ -32,54 +41,13 @@ const TYPE_NAMES = {
 /** Text and SingleSelect accept the string values the app sends */
 const STRING_SAFE_TYPES = new Set([1, 3])
 
-const PERIOD = 'Reporting Period'
 const EXPECTED = {
-  Office: [
-    PERIOD,
-    'Company',
-    'Equipment',
-    'Emission Source',
-    'Scope',
-    'Unit',
-    'Volume',
-    'EF (kg CO₂e/unit)',
-    'EF Reference',
-    'Total GHG (tonnes CO₂e)',
-  ],
-  Trips: [
-    PERIOD,
-    'Company',
-    'Full Name',
-    'Emp ID',
-    'Department',
-    'Trip Name',
-    'Purpose',
-    'From',
-    'To',
-    'Departure Date',
-    'Return Date',
-    'CO₂ flight (kg)',
-    'CO₂ ground (kg)',
-    'CO₂ accommodation (kg)',
-    'Total (kg CO₂e)',
-    'Transport details',
-    'Accommodation details',
-    'App data (JSON)',
-  ],
-  Commute: [
-    PERIOD,
-    'Company',
-    'Full Name',
-    'Emp ID',
-    'Department',
-    'Vehicle',
-    'One-way km',
-    'Working days / Month',
-    'WFH (days/month)',
-    'Carpool (people)',
-    'CO₂e (kg)',
-    'App data (JSON)',
-  ],
+  Office: Object.values(OFFICE_COLS),
+  Trips: Object.values(TRIP_COLS),
+  Flights: Object.values(FLIGHT_COLS),
+  Ground: Object.values(GROUND_COLS),
+  Hotels: Object.values(HOTEL_COLS),
+  Commute: Object.values(COMMUTE_COLS),
 }
 
 function loadEnvLocal() {
@@ -110,6 +78,9 @@ async function main() {
   const tables = {
     Office: env.VITE_LARK_TABLE_OFFICE,
     Trips: env.VITE_LARK_TABLE_TRIPS,
+    Flights: env.VITE_LARK_TABLE_FLIGHTS,
+    Ground: env.VITE_LARK_TABLE_GROUND,
+    Hotels: env.VITE_LARK_TABLE_HOTELS,
     Commute: env.VITE_LARK_TABLE_COMMUTE,
   }
   let problems = 0
@@ -122,8 +93,10 @@ async function main() {
     'VITE_LARK_BASE_APP_TOKEN',
     'VITE_LARK_TABLE_OFFICE',
     'VITE_LARK_TABLE_TRIPS',
+    'VITE_LARK_TABLE_FLIGHTS',
+    'VITE_LARK_TABLE_GROUND',
+    'VITE_LARK_TABLE_HOTELS',
     'VITE_LARK_TABLE_COMMUTE',
-    'VITE_LARK_TABLE_CLOSE',
     'VITE_LARK_API_BASE',
   ]) {
     console.log(`  ${k}: ${env[k] ? 'set' : '(empty)'}`)
@@ -182,10 +155,15 @@ async function main() {
     for (const name of EXPECTED[label]) {
       const f = fields.get(name)
       if (!f) {
-        const optional = name === 'Transport details' || name === 'Accommodation details'
-        console.log(`  ${optional ? 'WARN' : 'MISSING'}: "${name}" not on Base${optional ? ' (optional)' : ''}`)
-        if (optional) warnings++
-        else problems++
+        console.log(`  MISSING: "${name}" not on Base`)
+        problems++
+        continue
+      }
+      if (name === COL_TRIP_LINK && label !== 'Trips') {
+        if (f.type !== 21 && f.type !== 18) {
+          console.log(`  TYPE: "${name}" must be a Link column (is ${TYPE_NAMES[f.type] || f.type})`)
+          problems++
+        }
         continue
       }
       if (!STRING_SAFE_TYPES.has(f.type)) {
