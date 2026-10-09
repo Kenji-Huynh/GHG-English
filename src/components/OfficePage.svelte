@@ -4,6 +4,7 @@
   import CompanySelect from './CompanySelect.svelte'
   import CompanyFilterBadge from './CompanyFilterBadge.svelte'
   import RowActionIcons from './RowActionIcons.svelte'
+  import LocationPicker from './LocationPicker.svelte'
   import { get } from 'svelte/store'
   import {
     equipRows,
@@ -37,12 +38,14 @@
   }
 
   let location = $state('')
+  let locationCoords = $state(/** @type {{ lat: number, lng: number } | null} */ (null))
   let defaultCompany = $state(COMPANIES[0])
 
   $effect(() => {
     const saved = $offSettings.company ?? ''
     if (isValidCompany(saved)) defaultCompany = saved
     location = $offSettings.location ?? ''
+    locationCoords = $offSettings.coords ?? null
   })
 
   $effect(() => {
@@ -51,12 +54,12 @@
 
   $effect(() => {
     if (!isValidCompany(defaultCompany)) return
-    setCompanyLocation(defaultCompany, location)
+    setCompanyLocation(defaultCompany, location, locationCoords)
   })
 
   function persistLocation() {
     if (!isValidCompany(defaultCompany)) return
-    setCompanyLocation(defaultCompany, location)
+    setCompanyLocation(defaultCompany, location, locationCoords)
   }
 
   const visibleEquipRows = $derived.by(() => {
@@ -187,7 +190,7 @@
     </div>
     <div class="field">
       <label>Location / Facility</label>
-      <input type="text" placeholder="Building XYZ, District 1, HCMC" bind:value={location} oninput={persistLocation} />
+      <LocationPicker bind:value={location} bind:coords={locationCoords} onchange={persistLocation} />
     </div>
     <div class="field">
       <label>Company (default for new rows)</label>

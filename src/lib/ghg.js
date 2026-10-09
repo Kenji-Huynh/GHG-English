@@ -121,10 +121,14 @@ export const periodKeys = derived([allEquip, allTrips, allCommute, currentPkStor
 /** @typedef {{ state: 'idle'|'loading'|'ok'|'error', lastSync: number, error: unknown }} SyncStatus */
 export const syncStatus = writable(/** @type {SyncStatus} */ ({ state: 'idle', lastSync: 0, error: null }))
 
-export const offSettings = writable(/** @type {{ company?: string, location?: string }} */ (DB.load('ghg-offsettings') || {}))
+export const offSettings = writable(
+  /** @type {{ company?: string, location?: string, coords?: { lat: number, lng: number } | null }} */ (
+    DB.load('ghg-offsettings') || {}
+  ),
+)
 
-export function setCompanyLocation(company, location) {
-  offSettings.update((o) => ({ ...o, company, location }))
+export function setCompanyLocation(company, location, coords = get(offSettings).coords ?? null) {
+  offSettings.update((o) => ({ ...o, company, location, coords }))
   DB.save('ghg-offsettings', get(offSettings))
 }
 
