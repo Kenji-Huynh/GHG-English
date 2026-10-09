@@ -7,6 +7,18 @@
   import { calcCommute } from '../lib/calculations.js'
   import { commuteList, upsertCommute, deleteCommuteById, selectedCompany } from '../lib/ghg.js'
   import { confirmDanger, confirmAction, toastOk, toastErr, showErrorDetail } from '../lib/notify.js'
+  import ComboInput from './ComboInput.svelte'
+  import { suggest } from '../lib/suggestions.js'
+  import * as DB from '../lib/db.js'
+
+  /** Picking a known person fills the rest of the employee block */
+  function fillPerson(p) {
+    if (!p) return
+    if (p.name) cName = p.name
+    if (p.empId) cEmpid = p.empId
+    if (isValidCompany(p.company)) cCompany = p.company
+    if (p.dept) cDept = p.dept
+  }
 
   let cName = $state('')
   let cEmpid = $state('')
@@ -23,6 +35,18 @@
   let editingCommuteId = $state(null)
   let saving = $state(false)
   let commuteFormCard = $state(/** @type {HTMLDivElement | undefined} */ (undefined))
+
+  /* Unsaved form survives a page refresh / tab switch (cleared on save or "Clear form") */
+  const FORM_KEY = 'ghg-form-commute'
+  const savedForm = DB.load(FORM_KEY)
+  if (savedForm) {
+    ;({ cName, cEmpid, cDept, cCompany, cVehicle, cKm, cDays, cMonths, cCarpool, cWfh } = savedForm)
+    editingCommuteId = savedForm.editingCommuteId ?? null
+    if (cName || cEmpid) toastOk('Restored the commute entry you were filling in')
+  }
+  $effect(() => {
+    DB.save(FORM_KEY, { cName, cEmpid, cDept, cCompany, cVehicle, cKm, cDays, cMonths, cCarpool, cWfh, editingCommuteId })
+  })
 
   /** @param {{ vehicle?: string, ef?: number }} c */
   function vehicleEfFromRecord(c) {
@@ -218,11 +242,21 @@
     <div class="g3">
       <div class="field">
         <label>Full name <span class="required">*</span></label>
-        <input type="text" placeholder="John Smith" bind:value={cName} />
+        <ComboInput
+          placeholder="John Smith"
+          bind:value={cName}
+          options={$suggest.names}
+          onpick={(v) => fillPerson($suggest.personByName(v))}
+        />
       </div>
       <div class="field">
         <label>Employee ID <span class="required">*</span></label>
-        <input type="text" placeholder="EMP-00123" bind:value={cEmpid} />
+        <ComboInput
+          placeholder="EMP-00123"
+          bind:value={cEmpid}
+          options={$suggest.empIds}
+          onpick={(v) => fillPerson($suggest.personByEmpId(v))}
+        />
       </div>
       <div class="field">
         <label>Company <span class="required">*</span></label>

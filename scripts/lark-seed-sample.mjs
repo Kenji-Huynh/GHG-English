@@ -5,13 +5,14 @@
  *   node scripts/lark-seed-sample.mjs            → create sample rows (period = current month)
  *   node scripts/lark-seed-sample.mjs "Month 9 - 2026"
  *   node scripts/lark-seed-sample.mjs --delete   → remove the rows created by the last run
+ *   node scripts/lark-seed-sample.mjs --wipe     → delete EVERY row in all app tables (asks nothing — be careful)
  */
 
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EMISSION_SOURCES } from '../src/lib/constants.js'
-import { TRIP_COLS as T } from '../src/lib/larkSchema.js'
+import { OFFICE_COLS as O, TRIP_COLS as T } from '../src/lib/larkSchema.js'
 import { legToFields, segmentToFields, stayToFields, tripTotals } from '../src/lib/tripChildren.js'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -37,6 +38,7 @@ const TABLE = {
   flights: env.VITE_LARK_TABLE_FLIGHTS,
   ground: env.VITE_LARK_TABLE_GROUND,
   hotels: env.VITE_LARK_TABLE_HOTELS,
+  commute: env.VITE_LARK_TABLE_COMMUTE,
 }
 
 let token = ''
@@ -62,13 +64,25 @@ const uid = () => `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
 
 /* ───────────── Sample data ───────────── */
 
+/** `place` is looked up on Photon (same geocoder as the web map picker) to get the full address */
 const OFFICE = [
-  { company: 'ECS', equipment: 'Backup generator 250 kVA', source: 'Diesel (generator)', volume: 320 },
-  { company: 'MLOG', equipment: 'Company delivery van fleet', source: 'Petrol (motor vehicles)', volume: 1450 },
-  { company: 'SUNNY AUTO', equipment: 'Canteen kitchen stoves', source: 'LPG Gas (cooking/boiler)', volume: 180 },
-  { company: 'TREE MARINE', equipment: 'Central air conditioning (refill)', source: 'R-410A (refrigerant leakage)', volume: 2.5 },
-  { company: 'LEONG LEE', equipment: 'Head office building', source: 'Grid electricity (Vietnam)', volume: 18500 },
+  { company: 'ECS', equipment: 'Backup generator 250 kVA', source: 'Diesel (generator)', volume: 320, place: 'Bitexco Financial Tower' },
+  { company: 'MLOG', equipment: 'Company delivery van fleet', source: 'Petrol (motor vehicles)', volume: 1450, place: 'Cat Lai Port' },
+  { company: 'SUNNY AUTO', equipment: 'Canteen kitchen stoves', source: 'LPG Gas (cooking/boiler)', volume: 180, place: 'Saigon Hi-Tech Park' },
+  { company: 'TREE MARINE', equipment: 'Central air conditioning (refill)', source: 'R-410A (refrigerant leakage)', volume: 2.5, place: 'Tien Sa Port Da Nang' },
+  { company: 'LEONG LEE', equipment: 'Head office building', source: 'Grid electricity (Vietnam)', volume: 18500, place: 'Keangnam Landmark 72' },
 ]
+
+async function geocode(place) {
+  const url = `https://photon.komoot.io/api/?limit=1&bbox=102.1,8.2,109.5,23.4&q=${encodeURIComponent(place)}`
+  const j = await (await fetch(url)).json()
+  const f = j.features?.[0]
+  if (!f) return { location: place }
+  const p = f.properties
+  const street = [p.housenumber, p.street].filter(Boolean).join(' ')
+  const parts = [p.name, street, p.district, p.city, p.state, p.country].filter(Boolean)
+  return { location: [...new Set(parts)].join(', ') }
+}
 
 const leg = (from, to, km, cabin = 'Economy', legs = 1) => {
   const c = { Economy: 0.133, 'Prem. Economy': 0.2, Business: 0.266, First: 0.532 }[cabin]
@@ -144,7 +158,25 @@ function officeFields(row, period) {
     'EF (kg CO₂e/unit)': src.ef,
     'EF Reference': src.ref,
     'Total GHG (tonnes CO₂e)': +total.toFixed(6),
+    [O.location]: row.location,
   })
+}
+
+/** Delete every record of every app table (children before trips) */
+async function wipeAll() {
+  for (const kind of ['flights', 'ground', 'hotels', 'trips', 'office', 'commute']) {
+    const ids = []
+    let pageToken = ''
+    do {
+      const j = await lark(`${records(TABLE[kind])}?page_size=500${pageToken ? `&page_token=${pageToken}` : ''}`)
+      ids.push(...(j.data.items || []).map((r) => r.record_id))
+      pageToken = j.data.has_more ? j.data.page_token : ''
+    } while (pageToken)
+    for (let i = 0; i < ids.length; i += 500) {
+      await lark(`${records(TABLE[kind])}/batch_delete`, 'POST', { records: ids.slice(i, i + 500) })
+    }
+    console.log(`  - ${kind}: deleted ${ids.length} row(s)`)
+  }
 }
 
 function tripFields(t, period, y, m) {
@@ -199,6 +231,13 @@ async function main() {
   })
   token = tj.tenant_access_token
 
+  if (process.argv[2] === '--wipe') {
+    console.log('Wiping all rows…')
+    await wipeAll()
+    if (existsSync(idsPath)) unlinkSync(idsPath)
+    return console.log('All tables are empty.')
+  }
+
   if (process.argv[2] === '--delete') {
     if (!existsSync(idsPath)) return console.log('Nothing to delete (no previous sample run found).')
     const ids = JSON.parse(readFileSync(idsPath, 'utf8'))
@@ -227,10 +266,12 @@ async function main() {
 
   console.log('Office (Scope 1 & 2)')
   for (const row of OFFICE) {
-    const fields = officeFields(row, period)
+    const fields = officeFields({ ...row, ...(await geocode(row.place)) }, period)
     const j = await lark(records(TABLE.office), 'POST', { fields })
     created.office.push(j.data.record.record_id)
     console.log(`  + [Scope ${fields.Scope}] ${row.company.padEnd(11)} ${row.source.padEnd(30)} ${fields['Total GHG (tonnes CO₂e)']} t`)
+    console.log(`      📍 ${fields[O.location]}`)
+    await new Promise((r) => setTimeout(r, 400))
   }
 
   console.log('\nEmployees (Scope 3)')

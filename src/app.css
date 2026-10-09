@@ -674,6 +674,22 @@ tbody tr:hover td {
   grid-column: span 2;
 }
 
+.eq-card-grid .eq-span-4 {
+  grid-column: 1 / -1;
+}
+
+.eq-loc-cell {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eq-loc-cell a {
+  text-decoration: none;
+  margin-right: 4px;
+}
+
 .eq-card-grid .field-unit input {
   padding-right: 64px;
 }

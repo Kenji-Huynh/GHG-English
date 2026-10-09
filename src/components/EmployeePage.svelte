@@ -10,6 +10,9 @@
   import CompanySelect from './CompanySelect.svelte'
   import CompanyFilterBadge from './CompanyFilterBadge.svelte'
   import RowActionIcons from './RowActionIcons.svelte'
+  import ComboInput from './ComboInput.svelte'
+  import { suggest } from '../lib/suggestions.js'
+  import * as DB from '../lib/db.js'
   import {
     calcEmployeeTrip,
     newTransportSegment,
@@ -45,6 +48,15 @@
   let eProj = $state('')
   let eNote = $state('')
   let eCompany = $state(COMPANIES[0])
+
+  /** Picking a known person fills the rest of their details */
+  function fillPerson(/** @type {import('../lib/suggestions.js').Person | null} */ p) {
+    if (!p) return
+    if (p.name) eName = p.name
+    if (p.empId) eEmpid = p.empId
+    if (isValidCompany(p.company)) eCompany = p.company
+    if (p.dept) eDept = p.dept
+  }
   let otherTransports = $state([newTransportSegment()])
   let hotelStays = $state([newHotelStay()])
   let empSearch = $state('')
@@ -53,6 +65,27 @@
   let editingTripId = $state(null)
   let saving = $state(false)
   let tripFormCard = $state(/** @type {HTMLDivElement | undefined} */ (undefined))
+
+  /* Unsaved form survives a page refresh / tab switch (cleared on save or "Clear form") */
+  const FORM_KEY = 'ghg-form-trip'
+  const savedForm = DB.load(FORM_KEY)
+  if (savedForm) {
+    ;({ eName, eEmpid, eDept, eTrip, ePurpose, eFrom, eTo, eDate, eDateTo, eProj, eNote, eCompany } = savedForm)
+    editingTripId = savedForm.editingTripId ?? null
+    if (savedForm.flightLegs?.length) flightLegs = savedForm.flightLegs
+    if (savedForm.otherTransports?.length) otherTransports = savedForm.otherTransports
+    if (savedForm.hotelStays?.length) hotelStays = savedForm.hotelStays
+    if (eName || eEmpid || eTrip) toastOk('Restored the trip you were entering')
+  }
+  $effect(() => {
+    DB.save(FORM_KEY, {
+      eName, eEmpid, eDept, eTrip, ePurpose, eFrom, eTo, eDate, eDateTo, eProj, eNote, eCompany,
+      editingTripId,
+      flightLegs: $state.snapshot(flightLegs),
+      otherTransports: $state.snapshot(otherTransports),
+      hotelStays: $state.snapshot(hotelStays),
+    })
+  })
 
   $effect(() => {
     if ($selectedCompany) eCompany = $selectedCompany
@@ -304,11 +337,21 @@
     <div class="g3">
       <div class="field">
         <label>Full name <span class="required">*</span></label>
-        <input type="text" placeholder="John Smith" bind:value={eName} />
+        <ComboInput
+          placeholder="John Smith"
+          bind:value={eName}
+          options={$suggest.names}
+          onpick={(v) => fillPerson($suggest.personByName(v))}
+        />
       </div>
       <div class="field">
         <label>Employee ID <span class="required">*</span></label>
-        <input type="text" placeholder="EMP-00123" bind:value={eEmpid} />
+        <ComboInput
+          placeholder="EMP-00123"
+          bind:value={eEmpid}
+          options={$suggest.empIds}
+          onpick={(v) => fillPerson($suggest.personByEmpId(v))}
+        />
       </div>
       <div class="field">
         <label>Company <span class="required">*</span></label>
@@ -329,7 +372,7 @@
     <div class="g3">
       <div class="field span2">
         <label>Trip name <span class="required">*</span></label>
-        <input type="text" placeholder="Q2/2026 Client Conference" bind:value={eTrip} />
+        <ComboInput placeholder="Q2/2026 Client Conference" bind:value={eTrip} options={$suggest.tripNames} />
       </div>
       <div class="field">
         <label>Purpose</label>
@@ -341,11 +384,11 @@
       </div>
       <div class="field">
         <label>Departure</label>
-        <input type="text" placeholder="Ho Chi Minh City" bind:value={eFrom} />
+        <ComboInput placeholder="Ho Chi Minh City" bind:value={eFrom} options={$suggest.cities} />
       </div>
       <div class="field">
         <label>Destination</label>
-        <input type="text" placeholder="Hanoi" bind:value={eTo} />
+        <ComboInput placeholder="Hanoi" bind:value={eTo} options={$suggest.cities} />
       </div>
       <div class="field">
         <label>Departure date</label>
@@ -357,7 +400,7 @@
       </div>
       <div class="field">
         <label>Project code</label>
-        <input type="text" placeholder="PRJ-2026-04" bind:value={eProj} />
+        <ComboInput placeholder="PRJ-2026-04" bind:value={eProj} options={$suggest.projects} />
       </div>
     </div>
 
@@ -382,11 +425,11 @@
           <div class="g3 flight-leg-card-grid">
             <div class="field">
               <label>Origin</label>
-              <input type="text" placeholder="e.g. SGN, Tan Son Nhat" bind:value={leg.from} />
+              <ComboInput placeholder="e.g. SGN, Tan Son Nhat" bind:value={leg.from} options={$suggest.airports} />
             </div>
             <div class="field">
               <label>Destination</label>
-              <input type="text" placeholder="e.g. HAN, Noi Bai" bind:value={leg.to} />
+              <ComboInput placeholder="e.g. HAN, Noi Bai" bind:value={leg.to} options={$suggest.airports} />
             </div>
             <div class="field">
               <label>Cabin class</label>
@@ -436,7 +479,7 @@
             </div>
             <div class="field">
               <label>Note (e.g. Fuel receipt #3)</label>
-              <input type="text" placeholder="Short description" bind:value={seg.note} />
+              <ComboInput placeholder="Short description" bind:value={seg.note} options={$suggest.transportNotes} />
             </div>
             <div class="field field-unit">
               <label>Count / number of receipts</label>
@@ -494,7 +537,11 @@
           <div class="g3 flight-leg-card-grid">
             <div class="field span2">
               <label>Name / location (optional)</label>
-              <input type="text" placeholder="e.g. Muong Thanh Da Nang, Hoi An homestay" bind:value={stay.note} />
+              <ComboInput
+                placeholder="e.g. Muong Thanh Da Nang, Hoi An homestay"
+                bind:value={stay.note}
+                options={$suggest.stays}
+              />
             </div>
             <div class="field">
               <label>Accommodation type</label>

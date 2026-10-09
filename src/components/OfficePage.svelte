@@ -5,6 +5,8 @@
   import CompanyFilterBadge from './CompanyFilterBadge.svelte'
   import RowActionIcons from './RowActionIcons.svelte'
   import LocationPicker from './LocationPicker.svelte'
+  import ComboInput from './ComboInput.svelte'
+  import { suggest } from '../lib/suggestions.js'
   import { get } from 'svelte/store'
   import {
     equipRows,
@@ -17,6 +19,7 @@
     setCompanyLocation,
     addEquipDraft,
     updateEquipDraft,
+    setEquipDraftLocation,
     selectDraftSource,
     removeEquipDraft,
     editEquipRecord,
@@ -126,8 +129,18 @@
     toastOk('Row copied to the input section above — edit then click ✓ to save')
   }
 
+  /** Picking a known equipment name reuses the source / unit / EF it was saved with last time */
+  function fillEquipment(id, name) {
+    const p = $suggest.equipmentProfile(name)
+    if (!p) return
+    selectDraftSource(id, p.source)
+    if (p.unit) updateEquipDraft(id, 'unit', p.unit)
+    if (p.ef) updateEquipDraft(id, 'ef', p.ef)
+    if (p.efRef) updateEquipDraft(id, 'efRef', p.efRef)
+  }
+
   function onAddRow() {
-    addEquipDraft(defaultCompany)
+    addEquipDraft(defaultCompany, location, locationCoords)
   }
 
   async function onConfirmRow(row) {
@@ -189,8 +202,13 @@
       />
     </div>
     <div class="field">
-      <label>Location / Facility</label>
-      <LocationPicker bind:value={location} bind:coords={locationCoords} onchange={persistLocation} />
+      <label>Location / Facility (default for new rows)</label>
+      <LocationPicker
+        bind:value={location}
+        bind:coords={locationCoords}
+        options={$suggest.locations}
+        onchange={persistLocation}
+      />
     </div>
     <div class="field">
       <label>Company (default for new rows)</label>
@@ -247,12 +265,13 @@
           <div class="eq-card-grid">
             <div class="field">
               <label for="eq-name-{row.id}">Equipment</label>
-              <input
+              <ComboInput
                 id="eq-name-{row.id}"
-                type="text"
                 placeholder="Air conditioner, generator..."
                 value={row.equipment}
-                oninput={(e) => updateEquipDraft(row.id, 'equipment', e.currentTarget.value)}
+                options={$suggest.equipment}
+                oninput={(v) => updateEquipDraft(row.id, 'equipment', v)}
+                onpick={(v) => fillEquipment(row.id, v)}
               />
             </div>
             <div class="field">
@@ -307,12 +326,12 @@
             </div>
             <div class="field">
               <label for="eq-ref-{row.id}">EF reference</label>
-              <input
+              <ComboInput
                 id="eq-ref-{row.id}"
-                type="text"
                 placeholder="DEFRA 2023 / MONRE VN..."
                 value={row.efRef}
-                oninput={(e) => updateEquipDraft(row.id, 'efRef', e.currentTarget.value)}
+                options={$suggest.efRefs}
+                oninput={(v) => updateEquipDraft(row.id, 'efRef', v)}
               />
             </div>
             <div class="field field-unit">
@@ -327,6 +346,15 @@
                 oninput={(e) => setEquipNumber(row.id, 'volume', e.currentTarget.value)}
               />
               {#if row.unit && row.unit !== '—'}<span class="unit">{row.unit}</span>{/if}
+            </div>
+            <div class="field eq-span-4">
+              <label>Location / Facility</label>
+              <LocationPicker
+                value={row.location ?? ''}
+                options={$suggest.locations}
+                coords={row.lat || row.lng ? { lat: row.lat, lng: row.lng } : null}
+                onchange={(addr, c) => setEquipDraftLocation(row.id, addr, c)}
+              />
             </div>
           </div>
           {#if total > 0}
@@ -354,6 +382,7 @@
           <tr>
             <th>Equipment</th>
             <th>Company</th>
+            <th>Location</th>
             <th>Emission source</th>
             <th>Scope</th>
             <th>Unit</th>
@@ -366,7 +395,7 @@
         <tbody>
           {#if confirmedEquipRows.length === 0}
             <tr>
-              <td colspan="9" style="text-align:center;color:var(--text3);padding:1.5rem">
+              <td colspan="10" style="text-align:center;color:var(--text3);padding:1.5rem">
                 {#if $equipRows.length === 0}
                   No data yet
                 {:else}
@@ -380,6 +409,17 @@
               <tr class:trip-row-editing={editingRecordIds.has(r.id)} style:opacity={busyIds.has(r.id) ? 0.5 : null}>
                 <td>{r.equipment || '—'}</td>
                 <td>{r.company || '—'}</td>
+                <td class="eq-loc-cell" title={r.location}>
+                  {#if r.location}
+                    <a
+                      href="https://www.openstreetmap.org/search?query={encodeURIComponent(r.location)}"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Open on map">📍</a
+                    >
+                    {r.location}
+                  {:else}—{/if}
+                </td>
                 <td>{r.source || '—'}</td>
                 <td>
                   <span class="badge {r.scope === 1 ? 'scope-s1' : 'scope-s2'}">Scope {r.scope}</span>

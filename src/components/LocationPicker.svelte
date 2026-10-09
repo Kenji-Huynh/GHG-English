@@ -1,11 +1,15 @@
 <script>
   import 'leaflet/dist/leaflet.css'
   import { tick } from 'svelte'
+  import ComboInput from './ComboInput.svelte'
 
   let {
     value = $bindable(''),
     coords = $bindable(/** @type {{ lat: number, lng: number } | null} */ (null)),
     placeholder = 'Building XYZ, District 1, HCMC',
+    /** Previously used addresses offered while typing */
+    options = /** @type {string[]} */ ([]),
+    /** @type {(value: string, coords: { lat: number, lng: number } | null) => void} */
     onchange = () => {},
   } = $props()
 
@@ -182,7 +186,7 @@
     if (!picked) return
     value = picked.address
     coords = { lat: picked.lat, lng: picked.lng }
-    onchange()
+    onchange(value, coords)
     closePicker()
   }
 
@@ -194,13 +198,13 @@
 <svelte:window onkeydown={onKey} />
 
 <div class="loc-input">
-  <input
-    type="text"
+  <ComboInput
     {placeholder}
+    {options}
     bind:value
-    oninput={() => {
-      if (!value.trim()) coords = null
-      onchange()
+    oninput={(v) => {
+      if (!v.trim()) coords = null
+      onchange(v, coords)
     }}
   />
   <button type="button" class="btn btn-sm loc-open" title="Pick on map" onclick={openPicker}>📍 Map</button>
@@ -281,7 +285,7 @@
     display: flex;
     gap: 6px;
   }
-  .loc-input input {
+  .loc-input > :global(.combo) {
     flex: 1;
     min-width: 0;
   }

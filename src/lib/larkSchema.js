@@ -16,6 +16,7 @@ export const OFFICE_COLS = {
   ef: 'EF (kg CO₂e/unit)',
   efRef: 'EF Reference',
   total: 'Total GHG (tonnes CO₂e)',
+  location: 'Location / Facility',
 }
 
 /** Business trip header — flights / ground transport / hotels live in their own tables linked by «Trip» */

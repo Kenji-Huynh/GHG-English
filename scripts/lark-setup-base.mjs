@@ -6,7 +6,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { COL_APP_DATA, TRIP_COLS as T, FLIGHT_COLS as F, GROUND_COLS as G, HOTEL_COLS as H } from '../src/lib/larkSchema.js'
+import { COL_APP_DATA, OFFICE_COLS as O, TRIP_COLS as T, FLIGHT_COLS as F, GROUND_COLS as G, HOTEL_COLS as H } from '../src/lib/larkSchema.js'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const envPath = resolve(root, '.env.local')
@@ -44,7 +44,9 @@ const TABLES = [
       text('EF (kg CO₂e/unit)'),
       text('EF Reference'),
       text('Total GHG (tonnes CO₂e)'),
+      text(O.location),
     ],
+    remove: ['Latitude', 'Longitude', 'Map link'],
   },
   {
     envKey: 'VITE_LARK_TABLE_TRIPS',

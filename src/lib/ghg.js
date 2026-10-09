@@ -59,9 +59,30 @@ export function parsePeriodLabel(text) {
   return ''
 }
 
-export const currentMonth = writable(now.getMonth() + 1)
-export const currentYear = writable(now.getFullYear())
-export const activePage = writable(
+/** Writable kept in sessionStorage: survives a refresh of this tab, starts fresh in a new tab */
+function tabWritable(key, initial) {
+  let start = initial
+  try {
+    const raw = sessionStorage.getItem(key)
+    if (raw != null) start = JSON.parse(raw)
+  } catch {
+    /* no sessionStorage */
+  }
+  const store = writable(start)
+  store.subscribe((v) => {
+    try {
+      sessionStorage.setItem(key, JSON.stringify(v))
+    } catch {
+      /* ignore */
+    }
+  })
+  return store
+}
+
+export const currentMonth = tabWritable('ghg-tab-month', now.getMonth() + 1)
+export const currentYear = tabWritable('ghg-tab-year', now.getFullYear())
+export const activePage = tabWritable(
+  'ghg-tab-page',
   /** @type {'dashboard'|'office'|'employee'|'commute'|'close'} */ ('dashboard'),
 )
 export const selectedCompany = writable(ALL_COMPANIES)
@@ -169,6 +190,7 @@ function officeFromRecord(rec) {
     ef: readNumber(f[O.ef]),
     efRef: readText(f[O.efRef]),
     totalText: readText(f[O.total]),
+    location: readText(f[O.location]),
   }
 }
 
@@ -186,6 +208,7 @@ function officeToFields(row, period) {
     [O.ef]: row.ef || '',
     [O.efRef]: row.efRef || '',
     [O.total]: tot ? formatTotalTonnes(tot) : '',
+    [O.location]: row.location || '',
   }
 }
 
@@ -561,8 +584,12 @@ equipDrafts.subscribe((v) => DB.save(DRAFTS_KEY, v))
 
 export const equipDraftRows = derived([equipDrafts, currentPkStore], ([$d, $pk]) => $d.filter((r) => r.pk === $pk))
 
-/** @param {string} company */
-export function addEquipDraft(company) {
+/**
+ * @param {string} company
+ * @param {string} [location]
+ * @param {{ lat: number, lng: number } | null} [coords]
+ */
+export function addEquipDraft(company, location = '', coords = null) {
   equipDrafts.update((rows) => [
     ...rows,
     {
@@ -578,8 +605,18 @@ export function addEquipDraft(company) {
       volume: 0,
       scope: 1,
       company,
+      location,
+      lat: coords?.lat ?? 0,
+      lng: coords?.lng ?? 0,
     },
   ])
+}
+
+/** @param {string} id @param {string} location @param {{ lat: number, lng: number } | null} coords */
+export function setEquipDraftLocation(id, location, coords) {
+  equipDrafts.update((rows) =>
+    rows.map((r) => (r.id === id ? { ...r, location, lat: coords?.lat ?? 0, lng: coords?.lng ?? 0 } : r)),
+  )
 }
 
 /** @param {string} id @param {string} key @param {unknown} val */
@@ -626,6 +663,9 @@ export function editEquipRecord(row) {
       volume: row.volume,
       scope: row.scope,
       company: row.company,
+      location: row.location,
+      lat: 0,
+      lng: 0,
     },
   ])
   return true
